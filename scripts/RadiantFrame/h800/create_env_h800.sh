@@ -21,7 +21,7 @@ echo "=== CREATE UV Environment ==="
 
 # way 1: H800
 #-------------------------------------------------------------------------------
-export UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+export UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 # Do NOT add pypi.org as an extra index: uv's unsafe-best-match strategy queries
 # every index per-package, so an extra pypi.org makes each resolve hit the
 # (slow/blocked from CN) official PyPI and time out. Use aliyun only; install any
@@ -58,7 +58,7 @@ EOF
 uv pip install vllm==0.26.0
 
 # from source
-# change [[tool.uv.index]] from default to "https://mirrors.aliyun.com/pypi/simple"?
+# change [[tool.uv.index]] from default to "https://pypi.tuna.tsinghua.edu.cn/simple"?
 # MiniMax H3 support ships in vLLM-Omni, not the vllm wheel, so install it from a checkout.
 # NOTE: do NOT add the [fa4] extra on H800. FA4 (CuTe-DSL FlashAttention-4) is
 # Blackwell-only; H800 (Hopper, SM90) uses the FLASH_ATTN backend, which selects
