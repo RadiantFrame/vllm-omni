@@ -1,5 +1,5 @@
 #!/bin/bash
-# vLLM-Omni mirror of ../sglang/scripts/MiniMax-H3/h800/deploy_h3.sh.
+# vLLM-Omni mirror of ../sglang/scripts/MiniMax-H3/h800/deploy.sh.
 # sglang shape: --tp-size 2 --ulysses-degree 2  =>  TP2 x Ulysses2 = 4 GPUs
 #   (= plan "Candidate C": weight-shard 2-way + sequence-shard 2-way).
 # Mapping to vLLM-Omni:
