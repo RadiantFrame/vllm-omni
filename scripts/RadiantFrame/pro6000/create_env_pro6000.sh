@@ -19,9 +19,9 @@ echo "=== CREATE UV Environment ==="
 # install uv environment
 # curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# way 1: H800
+# way 1: pro6000
 #-------------------------------------------------------------------------------
-export UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+export UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 # Do NOT add pypi.org as an extra index: uv's unsafe-best-match strategy queries
 # every index per-package, so an extra pypi.org makes each resolve hit the
 # (slow/blocked from CN) official PyPI and time out. Use aliyun only; install any
@@ -44,10 +44,15 @@ cat > ~/.cargo/config.toml <<'EOF'
 git-fetch-with-cli = true
 EOF
 
-# with pip
-# uv pip install "sglang[diffusion]" --prerelease=allow
+uv pip install vllm==0.26.0
+
 # from source
-uv pip install -e "python[diffusion]" --prerelease=allow
-# # change [[tool.uv.index]] from default to "https://mirrors.aliyun.com/pypi/simple"
+# change [[tool.uv.index]] from default to "https://pypi.tuna.tsinghua.edu.cn/simple"?
+# MiniMax H3 support ships in vLLM-Omni, not the vllm wheel, so install it from a checkout.
+# NOTE: do NOT add the [fa4] extra on pro6000. FA4 (CuTe-DSL FlashAttention-4) is
+# Blackwell-only; pro6000 (Hopper, SM90) uses the FLASH_ATTN backend, which selects
+# FA2/FA3 kernels that ship with the base install. Adding [fa4] would pull
+# Blackwell-only wheels that cannot run on pro6000.
+uv pip install -e .
 
 sudo apt-get install -y ffmpeg
