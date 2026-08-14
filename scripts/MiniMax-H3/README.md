@@ -5,10 +5,10 @@ scripts/MiniMax-H3/
 ├── generate/     # hardware-independent clients: generate*.sh (HTTP request senders)
 │                 #   + 2k.sh (hosted-API client, no local GPUs)
 └── deploy/       # hardware-specific server configs, one folder per host profile
-    ├── h800/           # 4x H800 (80 GiB): tier0-5 optimization ladder, FP8 candidates
+    ├── h800/4h800/     # 4x H800 (80 GiB): tier0-5 optimization ladder, FP8 candidates
     └── rtx5090/
-        ├── 2xRTX5090/  # 2-card 5090 (32 GiB): DLO+BF16 tier0/1 experiments, N-service fan-out
-        └── 4xRTX5090/  # 4-card 5090 (32 GiB): single TP4 service; see its README for findings
+        ├── 2rtx5090/  # 2-card 5090 (32 GiB): single-service tier0/1 + N-service fan-out (tier0_2/3/4)
+        └── 4rtx5090/  # 4-card 5090 (32 GiB): single TP4 service; see its README for findings
 ```
 
 ## Why the split
@@ -21,7 +21,7 @@ request: default resolution / duration / single-port vs multi-port fan-out.
 `deploy*.sh` are the hardware-coupled server configs and stay under
 `deploy/<hardware>/`. Each experiment folder should keep a README recording
 script status (✅/❌ + exact failure signature), measured peaks, and pitfalls —
-see `deploy/rtx5090/4xRTX5090/README.md` for the format.
+see `deploy/rtx5090/4rtx5090/README.md` for the format.
 
 ## Usage
 
@@ -29,7 +29,7 @@ see `deploy/rtx5090/4xRTX5090/README.md` for the format.
 # start a service (pick a hardware dir), then from anywhere:
 bash scripts/MiniMax-H3/generate/generate_480p_5s.sh              # -> localhost:8000
 BASE_URL=http://localhost:8001 bash scripts/MiniMax-H3/generate/generate.sh
-PORTS="8000 8001" bash scripts/MiniMax-H3/generate/generate_2x2xRTX5090_480p_5s.sh  # fan-out
+PORTS="8000 8001" bash scripts/MiniMax-H3/generate/generate_480p_5s_n.sh  # fan-out
 ```
 
 All generate scripts accept env overrides (`BASE_URL`, `PORTS`, `SEED`,
