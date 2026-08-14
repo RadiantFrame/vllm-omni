@@ -1,19 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Fan-out the 480p/5s FL2VA request to ALL services started by
-# deploy_2x2xRTX5090_tier0.sh (2 services: GPU 0,1 -> port 8000,
-# GPU 2,3 -> port 8001). Requests are sent CONCURRENTLY (one background
-# curl per service) and each result is saved to ./outputs with a filename
-# that identifies which service produced it.
+# Fan-out the 480p/5s FL2VA request to N services CONCURRENTLY (one background
+# curl per service). Hardware-agnostic: services are identified purely by
+# PORT/HOST — any vLLM-Omni video service works, regardless of which GPUs or
+# deploy script started it. Results go to ./outputs with per-service names.
 #
 # Based on generate_480p_5s.sh (same prompt / keyframe / params).
-# Override ports/services via the PORTS array (space-separated), e.g.:
-#   PORTS="8000 8001 8002 8003" bash generate_480p_5s_2x2xRTX5090.sh
-# to also hit a 4-service deploy.
+# Services are derived from PORT_BASE + NUM_SERVICES (contiguous ports):
+#   bash generate_480p_5s_n.sh                          # 2 svc: 8000-8001 (default)
+#   NUM_SERVICES=4 bash generate_480p_5s_n.sh           # 4 svc: 8000-8003
+#   PORT_BASE=9000 NUM_SERVICES=3 bash generate_480p_5s_n.sh  # 3 svc: 9000-9002
+# For non-contiguous ports, set PORTS explicitly (overrides base/count):
+#   PORTS="8000 8002" bash generate_480p_5s_n.sh
 
-# Services to hit (must match deploy_2x2xRTX5090_tier0.sh: PORT_BASE=8000, 2 pairs).
-read -r -a PORTS <<<"${PORTS:-8000 8001}"
+# Services to hit: contiguous ports derived from PORT_BASE + NUM_SERVICES
+# (defaults match deploy/rtx5090/2rtx5090/deploy_tier0_2.sh:
+# PORT_BASE=8000, 2 services). PORTS overrides both for explicit port lists.
+PORT_BASE="${PORT_BASE:-8000}"
+NUM_SERVICES="${NUM_SERVICES:-2}"
+if [ -n "${PORTS:-}" ]; then
+    read -r -a PORTS <<<"$PORTS"
+else
+    PORTS=()
+    for ((i = 0; i < NUM_SERVICES; i++)); do
+        PORTS+=("$((PORT_BASE + i))")
+    done
+fi
 
 HOST="${HOST:-localhost}"
 OUT_DIR="${OUT_DIR:-./outputs}"
