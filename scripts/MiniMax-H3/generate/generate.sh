@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Call the running vLLM-Omni MiniMax-H3 FL2VA service (deploy_h3.sh, port 8000)
+# Call the running vLLM-Omni MiniMax-H3 FL2VA service (deploy.sh, port 8000)
 # with the same H3-Context-IR prompt + first-frame keyframe + seed as
-# ../sglang/scripts/MiniMax-H3/h800/generate_h3.sh.
+# ../sglang/scripts/MiniMax-H3/h800/generate.sh.
 #
 # sglang vs vLLM-Omni differences:
 #   - sglang: JSON body -> POST /v1/videos (async) + poll + GET .../content, port 30010
@@ -15,7 +15,8 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8000}"
 API_URL="${API_URL:-${BASE_URL}/v1/videos/sync}"
-OUTPUT="${OUTPUT:-fl2va.mp4}"
+OUTPUT="${OUTPUT:-outputs/fl2va.mp4}"
+mkdir -p "$(dirname "$OUTPUT")"
 SEED="${SEED:-0}"
 DURATION="${DURATION:-8}"
 KEYFRAME_URL="${KEYFRAME_URL:-https://cdn.hailuoai.com/prod/hailuo_demo/testsets/H3_AA_I2VA/gallery/sr_v17_variants_seed42_43_20260724/inputs/4a3a90bf9100_KDmcbkhzYo5sjjxr9FqcVmWVnzb.png}"
