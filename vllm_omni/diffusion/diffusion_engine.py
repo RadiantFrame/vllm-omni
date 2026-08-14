@@ -7,6 +7,7 @@ import asyncio
 import concurrent.futures
 import copy
 import inspect
+import os
 import queue
 import threading
 import time
@@ -61,7 +62,11 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-_ASYNC_OUTPUT_TIMEOUT = 30.0  # seconds
+# Per-output wait when streaming results back from the diffusion worker
+# (covers the final VAE decode + MP4 encode + transfer). Raise via the env var
+# when host CPU contention under concurrent services makes post-processing
+# exceed the default (e.g. multi-service fan-out with software video encode).
+_ASYNC_OUTPUT_TIMEOUT = float(os.environ.get("VLLM_OMNI_ASYNC_OUTPUT_TIMEOUT", "30.0"))
 
 __all__ = [
     "DiffusionEngine",
