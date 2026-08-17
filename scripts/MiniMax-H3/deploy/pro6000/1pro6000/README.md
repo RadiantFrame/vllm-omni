@@ -92,6 +92,33 @@ FP8 文档只声明与 **layerwise（DLO）** offload 互斥（weight stride 问
 3. **FP8 质量门自测**：与 BF16 同 seed 对照（当前引用官方数据）。
 4. **Ref2VA**：换 `MODEL=.../MiniMax-H3/Ref2VA` 重启，两分区勿同起。
 
+## 六·二、遗留事项清单（2026-08-17 收尾时盘点）
+
+**运维（低成本高价值）**
+
+| # | 事项 | 说明 |
+|---|---|---|
+| 1 | 重启机器 | 自 8/5 未重启，当天经历多次 swap 风暴/oomd 团灭/整机冻结；重启清理内核与驱动状态（oomd 已 disable 不会回来，重启后直接跑 deploy_fp8.sh 验证一次） |
+| 2 | SIGILL 观察窗口 | 间歇性崩溃已归档未定论（见踩坑 8）；重启后不再出现 → 结案；复发 → faulthandler 栈 + `memtest86+` 过夜排查内存 |
+
+**质量/性能（上生产前）**
+
+| # | 事项 | 说明 |
+|---|---|---|
+| 3 | FP8 画质门自测 | 与 BF16 同 seed 对照（当前引用官方数据） |
+| 4 | Cache-DiT 阈值调优 | 0.04→0.10/0.20，先过 #3 的质量门 |
+| 5 | 分辨率上限探测 | GPU 去噪期仅 ~49G/96G，720p 起逐档试 |
+| 6 | Ref2VA 分区验证 | 换 `MODEL=.../Ref2VA` 重启跑通一次；参考输入更长，注意 MemoryMax 余量 |
+
+**工程优化（择时立项）**
+
+| # | 事项 | 说明 |
+|---|---|---|
+| 7 | ~20G staging 残留调查 | worker 稳态 104G vs 理论 ~85G（encoder 48 + fp8 DiT 31 + 基线），疑似量化流程（"offloaded model back to CPU"）副本未释放；查清可降 20G 常驻内存，给 105G 保险丝留更多余量 |
+| 8 | mmap+DLO 单卡路径 | 实现仓库 TODO（no-allgather 的 rank-local mmap 流式 + H3 grouped-QKV/fused-MLP 适配器 + 权重等价性验证），是小内存主机的正解，适合独立 PR |
+| 9 | `pin_cpu_memory` 提升为 CLI flag | 现为环境变量 `VLLM_OMNI_PIN_CPU_MEMORY`；走 serve.py→OmniEngineArgs 做成 `--no-pin-cpu-memory` 更配上游 |
+| 10 | 离线 FP8 checkpoint | 离线预量化 DiT（62→~31G）后磁盘即为 FP8，省去每次启动 ~50s 的在线量化（"using cuda for weight loading"→"Quantization complete"），也消除加载期 GPU 冲到 ~94G 的瞬态；参考 5090 目录结论：offline FP8 是与 offload 兼容的唯一 FP8 形态（若未来走 DLO 路线）。encoder 不在官方 FP8 范围，保持 BF16 |
+
 ## 七、脚本索引
 
 | 文件 | 配置 | 实测 |
