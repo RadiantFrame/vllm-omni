@@ -13,7 +13,7 @@ set -euo pipefail
 #     path to skip the download).
 #   - fl2va task / duration / audio_flow_shift go in extra_params (per the H3 recipe).
 
-BASE_URL="${BASE_URL:-http://localhost:8000}"
+BASE_URL="${BASE_URL:-http://localhost:9000}"
 API_URL="${API_URL:-${BASE_URL}/v1/videos/sync}"
 OUTPUT="${OUTPUT:-fl2va.mp4}"
 SEED="${SEED:-0}"
