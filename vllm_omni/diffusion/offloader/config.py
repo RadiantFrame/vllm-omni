@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Collection, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, TypeVar
 
@@ -18,6 +19,10 @@ _KeyT = TypeVar("_KeyT")
 _ValueT = TypeVar("_ValueT")
 
 
+
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 class _FrozenMapping(Mapping[_KeyT, _ValueT]):
     """Small immutable mapping that remains safe to pickle between workers."""
 
@@ -318,6 +323,15 @@ def resolve_offload(config: Any) -> ResolvedOffload:
             ),
             resident_layers=0 if dit_options is None else dit_options.resident_layers,
         )
+
+    # Env override: pinned host copies cannot be swapped, so on hosts whose
+    # RAM barely fits the offloaded components the transient pageable+pinned
+    # double copy during a swap can OOM-kill unrelated processes (e.g. the
+    # desktop IDE). VLLM_OMNI_PIN_CPU_MEMORY=0 keeps the copies in ordinary
+    # swappable memory at the cost of H2D transfer speed.
+    if os.environ.get("VLLM_OMNI_PIN_CPU_MEMORY", "").lower() in ("0", "false", "no"):
+        resolved = replace(resolved, pin_memory=False)
+        logger.info("CPU offload pinning disabled via VLLM_OMNI_PIN_CPU_MEMORY")
 
     parallel_config = getattr(config, "parallel_config", None)
     data_parallel_size = int(getattr(parallel_config, "data_parallel_size", 1))
