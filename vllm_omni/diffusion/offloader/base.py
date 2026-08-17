@@ -4,6 +4,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
+import os
 
 import torch
 from torch import nn
@@ -54,6 +55,14 @@ class OffloadConfig:
         enable_layerwise_offload = getattr(od_config, "enable_layerwise_offload", False)
         enable_distributed_layerwise_offload = getattr(od_config, "enable_distributed_layerwise_offload", False)
         pin_cpu_memory = getattr(od_config, "pin_cpu_memory", True)
+        # Env override: pinned host copies cannot be swapped, so on hosts whose
+        # RAM barely fits the offloaded components the transient pageable+pinned
+        # double copy during a swap can OOM-kill unrelated processes (e.g. the
+        # desktop IDE). Setting VLLM_OMNI_PIN_CPU_MEMORY=0 keeps the copies in
+        # ordinary swappable memory at the cost of H2D transfer speed.
+        if os.environ.get("VLLM_OMNI_PIN_CPU_MEMORY", "").lower() in ("0", "false", "no"):
+            pin_cpu_memory = False
+            logger.info("CPU offload pinning disabled via VLLM_OMNI_PIN_CPU_MEMORY")
 
         parallel_config = getattr(od_config, "parallel_config", None)
         use_hsdp = getattr(parallel_config, "use_hsdp", False) if parallel_config else False
