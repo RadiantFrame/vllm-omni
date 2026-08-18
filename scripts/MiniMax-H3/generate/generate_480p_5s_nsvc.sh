@@ -12,13 +12,13 @@ set -euo pipefail
 #   NUM_SERVICES=4 bash generate_480p_5s_n.sh           # 4 svc: 8000-8003
 #   PORT_BASE=9000 NUM_SERVICES=3 bash generate_480p_5s_n.sh  # 3 svc: 9000-9002
 # For non-contiguous ports, set PORTS explicitly (overrides base/count):
-#   PORTS="8000 8002" bash generate_480p_5s_n.sh
+#   PORTS="9000 9002" bash generate_480p_5s_n.sh
 
 # Services to hit: contiguous ports derived from PORT_BASE + NUM_SERVICES
 # (defaults match deploy/rtx5090/2rtx5090/deploy_tier0_2svc.sh:
-# PORT_BASE=8000, 2 services). PORTS overrides both for explicit port lists.
-PORT_BASE="${PORT_BASE:-8000}"
-NUM_SERVICES="${NUM_SERVICES:-2}"
+# PORT_BASE=9000, 2 services). PORTS overrides both for explicit port lists.
+PORT_BASE="${PORT_BASE:-9000}"
+NUM_SERVICES="${NUM_SERVICES:-1}"
 if [ -n "${PORTS:-}" ]; then
     read -r -a PORTS <<<"$PORTS"
 else
