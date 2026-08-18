@@ -8,8 +8,8 @@
 #   service 3 -> GPUs 6,7 -> port 8003
 #
 # All 4 start concurrently in the background; per-service logs go to
-# deploy_tier0_3.svc<N>.gpu<..>.log in LOG_DIR.
-# PIDs are written to deploy_tier0_3.pids for `kill $(cat ...)`.
+# deploy_tier0_3svc.svc<N>.gpu<..>.log in LOG_DIR.
+# PIDs are written to deploy_tier0_3svc.pids for `kill $(cat ...)`.
 
 # !!! HOST RAM WARNING !!!
 # DLO keeps rank-local weights in PINNED host memory. Each service holds ~one
@@ -25,7 +25,7 @@ set -euo pipefail
 MODEL=/data/models/modelscope/MiniMax/MiniMax-H3/FL2VA
 LOG_DIR="${LOG_DIR:-./logs}"
 PORT_BASE="${PORT_BASE:-8000}"
-PID_FILE="$LOG_DIR/deploy_tier0_3.pids"
+PID_FILE="$LOG_DIR/deploy_tier0_3svc.pids"
 
 # GPU id pairs, one per service.
 PAIRS=("0,1" "2,3" "4,5")
@@ -45,7 +45,7 @@ echo "Launching ${#PAIRS[@]} services (tier0 config)..."
 for i in "${!PAIRS[@]}"; do
     gpus="${PAIRS[$i]}"
     port=$((PORT_BASE + i))
-    log="$LOG_DIR/deploy_tier0_3.svc${i}.gpu${gpus}.log"
+    log="$LOG_DIR/deploy_tier0_3svc.svc${i}.gpu${gpus}.log"
     echo "  service $i: GPUs=$gpus  port=$port  log=$log"
 
     CUDA_VISIBLE_DEVICES="$gpus" \
@@ -77,6 +77,6 @@ done
 echo ""
 echo "Launched ${#PAIRS[@]} services. PIDs: $(tr '\n' ' ' < "$PID_FILE")"
 echo ""
-echo "Tail a log:   tail -f $LOG_DIR/deploy_tier0_3.svc0.gpu0,1.log"
+echo "Tail a log:   tail -f $LOG_DIR/deploy_tier0_3svc.svc0.gpu0,1.log"
 echo "Health check: for p in 0 1 2; do curl -s http://localhost:\$((8000+p))/health; echo; done"
 echo "Stop all:     kill \$(cat $PID_FILE)"

@@ -59,9 +59,9 @@
 | 路数 | 脚本 | host RAM | 结果 |
 |---|---|---:|---|
 | 1 | `deploy_tier0.sh` | ~187GB | ✅ |
-| **2** | `deploy_tier0_2.sh` | ~374GB | ✅ **本机上限内的推荐档** |
-| 3 | `deploy_tier0_3.sh` | ~561GB | ⚠️ >503GB,**预测 OOM,未实测** |
-| 4 | `deploy_tier0_4.sh` | ~748GB | ❌ **实测 OOM**(见下) |
+| **2** | `deploy_tier0_2svc.sh` | ~374GB | ✅ **本机上限内的推荐档** |
+| 3 | `deploy_tier0_3svc.sh` | ~561GB | ⚠️ >503GB,**预测 OOM,未实测** |
+| 4 | `deploy_tier0_4svc.sh` | ~748GB | ❌ **实测 OOM**(见下) |
 
 - **4 路 OOM 实录**(503GB 机器):并发加载时权重加载 5s→87s、Model loading 193–202s(内存压力抖态),
   随后某 rank 被 **SIGKILL(exit -9,kernel OOM killer)**,主进程 `Rank N scheduler is dead` → EOFError 退出。
@@ -111,9 +111,9 @@
 | `deploy_tier1_resident32.sh` / `_resident40.sh` | resident 20→32/40 单变量 | 32:无效;40:未测 |
 | `deploy_tier1_cache_aggressive.sh` | R=0.04→0.20 单变量 | **1.45s/72.5s(最优)** |
 | `deploy_tier1_cache_skip.sh` | + `scm_steps_mask_policy:medium`(步级跳过) | 未测 |
-| `deploy_tier0_2.sh` | **2 路**服务(0,1 / 2,3,端口 8000/8001) | ✅ 可跑 |
-| `deploy_tier0_3.sh` | 3 路服务(+4,5) | ⚠️ 预测 OOM,未实测 |
-| `deploy_tier0_4.sh` | 4 路服务(+6,7) | ❌ 实测 OOM(exit -9) |
+| `deploy_tier0_2svc.sh` | **2 路**服务(0,1 / 2,3,端口 8000/8001) | ✅ 可跑 |
+| `deploy_tier0_3svc.sh` | 3 路服务(+4,5) | ⚠️ 预测 OOM,未实测 |
+| `deploy_tier0_4svc.sh` | 4 路服务(+6,7) | ❌ 实测 OOM(exit -9) |
 
 请求客户端在 `../../generate/`:`generate.sh`(1344×768/8s)、`generate_480p_5s.sh`(基线形状)、
 `generate_480p_5s_n.sh`(多端口并发压测)。
