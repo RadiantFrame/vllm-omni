@@ -15,7 +15,7 @@ set -euo pipefail
 #   PORTS="8000 8002" bash generate_480p_5s_n.sh
 
 # Services to hit: contiguous ports derived from PORT_BASE + NUM_SERVICES
-# (defaults match deploy/rtx5090/2rtx5090/deploy_tier0_2.sh:
+# (defaults match deploy/rtx5090/2rtx5090/deploy_tier0_2svc.sh:
 # PORT_BASE=8000, 2 services). PORTS overrides both for explicit port lists.
 PORT_BASE="${PORT_BASE:-8000}"
 NUM_SERVICES="${NUM_SERVICES:-2}"
