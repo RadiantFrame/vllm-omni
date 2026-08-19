@@ -27,7 +27,7 @@ see `deploy/rtx5090/4rtx5090/README.md` for the format.
 
 ```bash
 # start a service (pick a hardware dir), then from anywhere:
-bash scripts/MiniMax-H3/generate/generate_480p_5s.sh              # -> localhost:8000
+bash scripts/MiniMax-H3/generate/generate_480p_5s_nsvc.sh              # -> localhost:8000
 BASE_URL=http://localhost:8001 bash scripts/MiniMax-H3/generate/generate.sh
 PORTS="8000 8001" bash scripts/MiniMax-H3/generate/generate_480p_5s_n.sh  # fan-out
 ```

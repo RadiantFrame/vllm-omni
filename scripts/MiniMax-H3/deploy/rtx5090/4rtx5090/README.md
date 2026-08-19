@@ -47,7 +47,7 @@ TE-TP4 是关键:encoder 默认全压 rank0,TE-TP4 把它 4 路切分,显著拉�
 
 | 脚本 | 结果 | 关键数据 |
 |---|---|---|
-| `deploy.sh`(TP4+DLO+BF16) | ✅ **可跑** | 峰值 HBM **~10G/卡**(GPU 大量闲余,见下);去噪延迟未记录,建议用 `generate/generate_480p_5s.sh` 实测(预期优于 2 卡的 1.72s/step) |
+| `deploy.sh`(TP4+DLO+BF16) | ✅ **可跑** | 峰值 HBM **~10G/卡**(GPU 大量闲余,见下);去噪延迟未记录,建议用 `generate/generate_480p_5s_nsvc.sh` 实测(预期优于 2 卡的 1.72s/step) |
 | `deploy_fp8.sh`(TP4+online FP8,无 DLO) | ❌ **加载期 OOM** | 见下方详细 |
 
 ### FP8 失败实录(错误签名 + 机制)
@@ -99,12 +99,12 @@ TP4 + DLO 下每 resident block 仅 ~1/4 块大小(20 块 resident ≈ 6G + buff
 | `deploy.sh` | TP4 + DLO(resident20) + BF16 + Cache-DiT R=0.04 + enforce-eager | ✅ 主推 |
 | `deploy_fp8.sh` | TP4 + online FP8 + 无 DLO + regional compile(**勿在 5090 用**) | ❌ OOM 存档 |
 
-请求客户端在 `../../generate/`(`generate_480p_5s.sh` 默认打 8000)。
+请求客户端在 `../../generate/`(`generate_480p_5s_nsvc.sh` 默认打 8000)。
 两脚本均支持 `PROFILER=1` 开关(`--enable-diffusion-pipeline-profiler`)。
 
 ## 六、剩余杠杆(按 ROI)
 
-1. **补去噪延迟实测**:同 prompt/seed 跑 `generate_480p_5s.sh`,与 2 卡 1.72s/step 对照,量化 TP4 收益。
+1. **补去噪延迟实测**:同 prompt/seed 跑 `generate_480p_5s_nsvc.sh`,与 2 卡 1.72s/step 对照,量化 TP4 收益。
 2. **Cache-DiT R=0.04→0.20**:2 卡实测 −16%,本拓扑直接可套(先过质量门)。
 3. **offline FP8 checkpoint + DLO**:5090 上吃 FP8 提速的唯一路径(无加载瞬态、与 DLO 兼容),
    需先离线量化 DiT(62→~31G);encoder 不在官方 FP8 范围。未建成。

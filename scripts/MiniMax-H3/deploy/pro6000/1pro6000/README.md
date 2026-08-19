@@ -125,7 +125,7 @@ FP8 文档只声明与 **layerwise（DLO）** offload 互斥（weight stride 问
 |---|---|---|
 | `deploy_fp8.sh` | FP8 + 模型级 offload + Cache-DiT（**主推**） | ✅ 4 连发 86-93s |
 | `deploy.sh` | BF16 回退/对照（unpinned + 保险丝） | ⚠️ 峰值 109-110G 贴红线，仅作对照 |
-| 客户端 | `../../generate/generate_480p_5s.sh`（`BASE_URL=http://localhost:9000`） | |
+| 客户端 | `../../generate/generate_480p_5s_nsvc.sh`（`BASE_URL=http://localhost:9000`） | |
 
 引擎侧配套补丁（本仓库）：
 - `VLLM_OMNI_PIN_CPU_MEMORY`（offloader/base.py，默认关闭不影响上游行为）
