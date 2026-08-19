@@ -8,7 +8,7 @@
 
 - **机器**:8×RTX 5090 32GB(Blackwell 消费卡),主机 RAM **503GB**。每路服务固定用 2 卡。
 - **模型/负载**:MiniMax-H3 FL2VA,默认压测形状 **480p(832×480)/ 5s / 50 步**(1317 tokens,seed 0),
-  客户端 `../../generate/generate_480p_5s.sh`。
+  客户端 `../../generate/generate_480p_5s_nsvc.sh`。
 - **三条硬约束**:
   1. **32GB 放不下 BF16 全 resident**:TP2 每卡 ~38.8GB → 必须 **DLO**(`--enable-distributed-layerwise-offload
      --dlo-no-use-allgather`),且 DLO 强制 `--enforce-eager`(流式 hook 破坏 cuda-graph)。
@@ -115,7 +115,7 @@
 | `deploy_tier0_3svc.sh` | 3 路服务(+4,5) | ⚠️ 预测 OOM,未实测 |
 | `deploy_tier0_4svc.sh` | 4 路服务(+6,7) | ❌ 实测 OOM(exit -9) |
 
-请求客户端在 `../../generate/`:`generate.sh`(1344×768/8s)、`generate_480p_5s.sh`(基线形状)、
+请求客户端在 `../../generate/`:`generate.sh`(1344×768/8s)、`generate_480p_5s_nsvc.sh`(基线形状)、
 `generate_480p_5s_n.sh`(多端口并发压测)。
 
 ## 六、剩余杠杆(按 ROI)

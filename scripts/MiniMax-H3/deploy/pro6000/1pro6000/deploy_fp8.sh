@@ -38,7 +38,7 @@ export VLLM_OMNI_PIN_CPU_MEMORY=0
 
 MODEL=/mnt/SS4T/models/MiniMaxAI/MiniMax-H3/FL2VA
 # Port 8000 is taken by the VS Code port-forwarding service on this host.
-# Client must override: BASE_URL=http://localhost:9000 bash ../../generate/generate_480p_5s.sh
+# Client must override: BASE_URL=http://localhost:9000 bash ../../generate/generate_480p_5s_nsvc.sh
 PORT=9000
 
 # --- systemd-oomd must be STOPPED on this host before serving ---

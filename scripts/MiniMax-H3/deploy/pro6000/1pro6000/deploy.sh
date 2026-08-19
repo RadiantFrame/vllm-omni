@@ -34,7 +34,7 @@
 #     large processes first. Pinned memory cannot swap (the 63 G swap only
 #     cushions unpinned allocations).
 #   - Start at 480p (832x480, 5 s): 2x96 G TP2 runs 5.57 s/step at 1344x768, so
-#     expect ~2x that single-card. Client: ../../generate/generate_480p_5s.sh
+#     expect ~2x that single-card. Client: ../../generate/generate_480p_5s_nsvc.sh
 #   - Ref2VA is a separate 135 G partition: stop this server and restart with
 #     MODEL=.../MiniMax-H3/Ref2VA (never both at once on this host).
 #   - Log anchors to verify: "Cache-dit enabled successfully" + cache summary,
@@ -56,7 +56,7 @@ export VLLM_OMNI_PIN_CPU_MEMORY=0
 
 MODEL=/mnt/SS4T/models/MiniMaxAI/MiniMax-H3/FL2VA
 # Port 8000 is taken by the VS Code port-forwarding service on this host.
-# Client must override: BASE_URL=http://localhost:9000 bash ../../generate/generate_480p_5s.sh
+# Client must override: BASE_URL=http://localhost:9000 bash ../../generate/generate_480p_5s_nsvc.sh
 PORT=9000
 
 # Fuse: a cgroup MemoryMax makes the worst case "server OOM-killed inside its
