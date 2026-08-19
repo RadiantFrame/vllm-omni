@@ -1,61 +1,75 @@
 # MiniMax-H3 1×H800 部署（单卡最佳推理性能）
 
-> 单卡 80G 上 H3 的唯一可行拓扑：**模型级 CPU 卸载（互斥驻留）+ BF16 + Cache-DiT + FA3**。
-> 实测：480p/832×480/5s 稳态 **52.8s**；FP8 在单卡 80G 上不可用（见 §3）。
+> 单卡 80G 上 H3 的唯一可行拓扑：**模型级 CPU 卸载（互斥驻留）+ FP8 + Cache-DiT + FA3**。
+> 实测：480p/832×480/5s 稳态 **50.5s**（FP8）；FP8 曾不可用，被上游 #5910 修复（见 §3）。
 
 ## TL;DR
 | 项 | 结论 |
 |---|---|
-| 推荐脚本 | **`deploy.sh`**（`--enable-cpu-offload` + BF16 + Cache-DiT high + FA3） |
-| 480p/832×480/5s | 稳态 **≈52.8s**（denoise ~43s 占 81%） |
-| 8 路并发（`deploy_8svc.sh`，8 卡各 1 路） | 稳态 **≈61.5s/路**（衰减 +16.5%），聚合 **7.61 视频/分**（效率 84%，见 §5） |
-| 768p/1344×768/8s | 未测（denoise ~4×480p，估计 ~200s+，swap 62G/次） |
-| 显存 | 模型就绪 58.9 GiB/卡，余量 ~21G |
-| 弃用 | FP8（单卡 80G 加载期 OOM，见 §3） |
+| 推荐脚本 | **`deploy_fp8.sh`**（`--enable-cpu-offload` + **FP8** + Cache-DiT high + FA3） |
+| 480p/832×480/5s（FP8） | 稳态 **≈50.5s**（denoise ~1.01s/it），模型常驻 **36.3 GiB**（余量 ~44G） |
+| 480p 同负载（BF16 参考） | 52.8s（`deploy.sh`，质量参考档） |
+| 8 路并发（`deploy_8svc.sh`，BF16） | 稳态 ≈61.5s/路（衰减 +16.5%），聚合 7.61 视频/分（见 §5） |
+| **8 路并发（`deploy_fp8_8svc.sh`，FP8）** | 稳态 **≈55.6s/路（衰减仅 +10.1%）**，聚合 **8.44 视频/分（+11% vs BF16 版，8×1 布局新纪录）**（见 §5a） |
+| 768p/1344×768/8s | 未测；FP8 的 44G 余量使单卡 768p 可行性大增（BF16 时代接近极限） |
+| BF16 档定位 | `deploy.sh` = 质量参考（FP8 已官方过门，日常用 FP8） |
 
 ---
 
 ## 1. 目录脚本
 | 脚本 | 状态 | 说明 |
 |---|---|---|
-| `deploy.sh` | ✅ 推荐 | cpu-offload + BF16 + Cache-DiT(high) + FLASH_ATTN(FA3) + regional compile |
-| `deploy_8svc.sh` | ✅ 吞吐版 | 8 卡各起 1 路（端口 9000–9007，master 29500+i 防端口竞态），每路 = deploy.sh 配置 |
+| `deploy_fp8.sh` | ✅ **推荐** | cpu-offload + **FP8** + Cache-DiT(high) + FLASH_ATTN(FA3)；稳定 50.5s |
+| `deploy.sh` | 📌 质量参考 | 同上但 BF16；52.8s，显存 58.9G；质量基准/FP8 对照用 |
+| `deploy_fp8_8svc.sh` | ✅ **吞吐版（推荐）** | 8 卡各起 1 路（FP8，端口 9000–9007，master 29500+i）；55.6s/路，聚合 8.44 视频/分 |
+| `deploy_8svc.sh` | 🗄️ 存档 | BF16 版 8 路（被 FP8 版全面胜出，保留作对照） |
 
 ## 2. 配置与原理（为什么这样才放得下）
 | Flag | 值 | 作用 |
 |---|---|---|
 | `--num-gpus` | 1 | 单卡 |
-| `--enable-cpu-offload` | 开 | **核心**：编码器(BF16 ~51.5G) 与 DiT(BF16 ~62G) 互斥驻留——同一时刻 GPU 只放当前阶段组件，其余躺主机内存（本机 2TB） |
-| `--quantization` | **不用**（BF16） | FP8 单卡不可用（§3） |
+| `--enable-cpu-offload` | 开 | **核心**：编码器 与 DiT 互斥驻留——同一时刻 GPU 只放当前阶段组件，其余躺主机内存（本机 2TB） |
+| `--quantization` | fp8（deploy_fp8）/ 不用（deploy.sh） | 在线 FP8（#5910 后兼容 offload）：DiT + Qwen3-VL text decoder 都量化，swap 31G/方向 + FP8 GEMM |
 | `--cache-backend` + config | cache_dit，R=0.04 | 跨步缓存（多卡实测最大单项） |
 | `--diffusion-attention-backend` | FLASH_ATTN | Hopper=FA3，本机验证最优 |
 | （不加 enforce-eager） | — | regional compile 与 sequential offload 兼容 |
 | `VLLM_OMNI_ASYNC_OUTPUT_TIMEOUT=300` | 环境变量 | offload 下 post-denoise 超 30s 默认值会被误杀 |
 
-**互斥驻留的显存账**：任一时刻峰值 = max(编码阶段 ~52G, 去噪阶段 DiT 62G+激活, VAE 阶段) 而非求和 ~120G——这就是单卡能跑的原因。
+**互斥驻留的显存账**：任一时刻峰值 = max(当前阶段组件 + 激活) 而非求和。FP8 下 DiT ~31G / 编码器 ~26G，模型就绪实测 **36.3 GiB**（BF16 是 58.9）。
 
-## 3. 为什么单卡不能用 FP8（实测根因）
-| 项 | 事实 |
+## 3. FP8 单卡可用性：曾不可用 → 上游 #5910 修复（完整翻案记录）
+| 阶段 | 事实 |
 |---|---|
-| 现象 | `--quantization fp8` + cpu-offload 启动即 OOM（`logs/h3_0818_1h800.log` 首跑，已覆盖） |
-| 机制 | 在线 FP8 的 BF16→FP8 转换（`scaled_fp8_quant`，CUDA kernel）在**加载阶段逐层跑在 GPU 上**；逐层“量化后回 CPU”未能阻止累积 → 编码器 51.5G 常驻 + DiT 转换产物累积到 **78.05G** → 差 250MB 爆掉 |
-| 为何 pro6000 的 FP8 版能跑 | 那是 **96G** 卡，扛住了转换累积窗口 |
-| 其它路也不通 | FP8+DLO 文档声明不兼容（权重 stride） |
-| 代价 | BF16：每次 swap 搬 62G（FP8 是 31G）+ 无 FP8 GEMM；**质量反而是参考级最好** |
+| ❌ 2026-08-18（旧代码） | `--quantization fp8` + cpu-offload 启动即 OOM：加载期 BF16→FP8 转换（`scaled_fp8_quant`，CUDA kernel）在 GPU 逐层累积 + 编码器 51.5G 常驻 → **78.05G 爆掉**（差 250MB）；96G 的 pro6000 才扛得住 |
+| ✅ 2026-08-19（#5910 后） | 上游 `d1e230c9` 新增 `_stream_online_quant_weights_to_cpu`：**逐层量化完成即流式卸到 CPU**，GPU 加载占用仅 0.03 GiB——累积 OOM 根除 |
+| 验证锚点 | `Stream-offloaded 408 online-quantized layers to CPU during weight loading` + `Selected CutlassFP8ScaledMMLinearKernel` + 0 报错 |
+| 附带扩展 | #5910 后 FP8 默认量化 **DiT + text decoder** 双组件（vision tower/VAE/FP32 投影保留）——编码器常驻从 ~51.5G(BF16) 降到 ~26G(FP8) |
 
-## 4. 实测汇总（2026-08-18，`logs/h3_0818_1h800.log`，480p/832×480/5s/50 步）
+## 4. 实测汇总（480p/832×480/5s/50 步）
+### FP8（`deploy_fp8.sh`，2026-08-19，`logs/deploy_fp8_0819_1h800.log`）
+| # | e2e | 说明 |
+|---|---:|---|
+| 1 | 76.50s | compile warmup（不计） |
+| 2 | 66.86s | 懒初始化收敛（不计） |
+| 3–7 | **50.48–50.58s** | 稳态（5 次，波动 ±0.05s），denoise ~1.01s/it |
+
+### BF16（`deploy.sh`，2026-08-18，`logs/h3_0818_1h800.log`）
 | # | e2e | 说明 |
 |---|---:|---|
 | 1 | 109.0s | compile warmup（不计） |
-| 2 | 85.8s | 懒初始化未收敛（不计） |
-| 3–9 | **52.73–53.08s** | 稳态（7 次，波动 ±0.3s） |
+| 2 | 85.8s | 懒初始化（不计） |
+| 3–9 | **52.73–53.08s** | 稳态（7 次） |
 
-- denoise ~43s（**占 E2E ~81%**）；其余 ~10s = 编码 + 2 次 swap(62G over PCIe) + VAE + MP4。
-- 显存：加载 10.3 GiB → 模型就绪 58.91 GiB（余量 ~21G）。
-- **跨卡（同 480p workload）：2×H800 TP2=26.5s → 1×H800=52.8s = 1.99×，近完美线性减半。**
-- 生效锚点：`Resolved ... 'FLASH_ATTN'` ✓ / `Cache-dit enabled successfully` ✓ / 0 报错。
+### FP8 vs BF16 对照
+| 指标 | BF16（deploy.sh） | **FP8（deploy_fp8.sh）** | 变化 |
+|---|---:|---:|---|
+| 稳态 E2E | 52.8s | **50.5s** | **−4.3%** |
+| 模型常驻 | 58.9 GiB | **36.3 GiB** | **−38%（余量 21G→44G）** |
+| 质量 | 参考级 | 官方过门（LPIPS 0.116/PSNR 23.6/音频 0.96） | — |
 
-## 5. 8 路并发实测（`deploy_8svc.sh`，2026-08-18，480p/832×480/5s）
+> 注：52.8s 测于旧代码；50.5s 叠加了新 main 的 modulation/SwiGLU/Ulysses 优化——FP8 净贡献需在新代码上重跑 BF16 才能严格分离（可选实验）。**FP8 的大赢点是显存**：44G 余量让单卡 768p 从「接近极限」变「宽裕」。
+
+## 5. 8 路并发实测（`deploy_8svc.sh`，2026-08-18，BF16，480p/832×480/5s）
 
 压测口径：`NUM_SERVICES=8 bash scripts/MiniMax-H3/generate/generate_480p_5s_nsvc.sh`（8 路同时发同一请求，共 7 轮；日志 `logs/deploy_8svc.svc<N>.gpu<N>.log`）。
 
@@ -80,39 +94,72 @@
 | 聚合吞吐 | 1.14 视频/分 | **7.61 视频/分** | 理想 9.09 → **效率 84%** |
 
 > 吞吐口径：`路数 ÷ 最后一轮最大延迟 × 60`（末轮 max=63.08s；同步轮次下整轮墙钟由最慢路决定，故用 max 而非均值）。
+> 本节为 BF16 配置实测；FP8 版见 §5a（更快，推荐）。
 
 **观测：**
 - 收敛形态与单路同构（轮1 compile、轮2 懒初始化、轮3 起稳态），8 路一致、无失败无 OOM。
-- **服务间有稳定 ~5s 梯度**（svc2=58.2 最快 → svc4=63.4 最慢，7 轮排序不变）：非随机噪声，疑为 PCIe 拓扑/NUMA 亲缘差异（swap 为 I/O 型主开销）。可选优化：`nvidia-smi topo -m` 确认拓扑后用 `numactl` 绑 NUMA，收益上限 ~5s/路（~8%）。
+- **服务间有稳定 ~5s 梯度**（svc2=58.2s 最快 → svc4=63.4s 最慢，7 轮排序不变）：非随机噪声，疑为 PCIe 拓扑/NUMA 亲缘差异（swap 为 I/O 型主开销）。可选优化：`nvidia-smi topo -m` 确认拓扑后用 `numactl` 绑 NUMA，收益上限 ~5s/路（~8%）。
 - 并发脚本要点：8 路同时启动时 torch.distributed TCP store 随机选端口有撞车概率（实测 svc0 曾 EADDRINUSE 挂掉）——`deploy_8svc.sh` 已用 `MASTER_PORT=29500+i` 钉死根除。
+
+## 5a. FP8 8 路并发实测（`deploy_fp8_8svc.sh`，2026-08-19，480p/832×480/5s）
+
+压测口径：`NUM_SERVICES=8 PORT_BASE=9000 ROUNDS=7 bash ../../generate/generate_480p_5s_nsvc.sh`（7 轮 × 8 路；日志 `logs/deploy_fp8_8svc.svc<N>.gpu<N>.log`，0 报错 0 OOM，压测后批量优雅关闭）。
+
+**每轮 × 8 路 E2E（秒）：**
+
+| 轮次 | svc0 | svc1 | svc2 | svc3 | svc4 | svc5 | svc6 | svc7 | 均值 | 最大值 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1（compile warmup） | 73.38 | 84.23 | 77.12 | 81.47 | 75.93 | 78.82 | 78.83 | 76.37 | 78.27 | **84.23** |
+| 2（懒初始化收敛） | 68.89 | 68.46 | 63.83 | 74.31 | 68.33 | 69.75 | 73.69 | 70.29 | 69.69 | **74.31** |
+| 3 | 53.34 | 53.15 | 53.32 | 57.56 | 55.06 | 55.71 | 57.61 | 55.00 | 55.09 | **57.61** |
+| 4 | 54.78 | 56.21 | 54.49 | 58.62 | 57.74 | 57.16 | 58.09 | 57.10 | 56.90 | **58.62** |
+| 5 | 53.62 | 53.86 | 53.16 | 57.30 | 54.63 | 55.96 | 57.20 | 54.78 | 55.31 | **57.30** |
+| 6 | 54.67 | 54.94 | 54.31 | 57.95 | 56.13 | 56.18 | 57.25 | 56.01 | 55.93 | **57.95** |
+| 7 | 53.54 | 53.55 | 53.42 | 56.87 | 55.12 | 55.44 | 56.33 | 55.00 | 54.91 | **56.87** |
+| **稳态均值（3–7 轮）** | 53.99 | 54.34 | **53.74** | **57.66** | 55.74 | 56.09 | 57.30 | 55.58 | **55.56** | — |
+
+**FP8 8svc vs BF16 8svc 同口径对照**（末轮 max 口径）：
+
+| 指标 | BF16（`deploy_8svc.sh`） | **FP8（`deploy_fp8_8svc.sh`）** | 改善 |
+|---|---:|---:|---|
+| 单路稳态 E2E | 61.5s | **55.6s** | **−9.6%** |
+| 并发衰减（vs 各自单路） | +16.5%（52.8→61.5） | **+10.1%**（50.5→55.6） | swap 减半（31G/方向）如预期压低竞争 |
+| 聚合吞吐 | 7.61 视频/分 | **8.44 视频/分**（末轮 max=56.87s） | **+11%** |
+| 服务间梯度 | ~5s（svc2→svc4） | ~4s（svc2=53.7 → svc3/svc6≈57.5） | 略窄 |
+| 每路主机内存 | ~130G | **~65G**（8 路 ≈520G，更宽松） | FP8 减半 |
+
+**结论**：FP8 版全面胜出，`deploy_8svc.sh`（BF16）转为存档对照。**8×1 卡布局吞吐纪录刷新为 8.44 视频/分**——仍低于 4×2 卡 TP2 的 8.85（布局排序不变），但差距缩至 5%；若部署约束允许混合，8×1 FP8 已是可用的吞吐选项（且单路延迟 55.6s 优于 4×2 的 27.25s×2 排队场景的尾延迟）。
 
 ## 6. 使用
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `CUDA_VISIBLE_DEVICES` | 0 | 单卡选择 |
+| `CUDA_VISIBLE_DEVICES` | 0（deploy_fp8 为 4） | 单卡选择 |
 | `PORT` | 9000 | |
 | `MODEL` | `.../MiniMax-H3/FL2VA` | Ref2VA 换 `.../Ref2VA` 重启（勿同跑） |
 
 ```bash
-bash deploy.sh
-bash ../../generate/generate_480p_5s.sh   # warmup 2 + 计时 ≥3 取末次（本配置收敛需 2 个请求）
+bash deploy_fp8.sh                          # 推荐：FP8，50.5s
+bash deploy.sh                              # 质量参考：BF16，52.8s
+bash ../../generate/generate_480p_5s_nsvc.sh     # 默认 1 路 × 7 轮（收敛需 2 个请求，稳态从第 3 轮起读日志）
 
-bash deploy_8svc.sh                        # 8 路吞吐版（8 卡各 1 路，端口 9000–9007）
-NUM_SERVICES=8 PORT_BASE=9000 bash ../../generate/generate_480p_5s_nsvc.sh   # 8 路并发压测
-kill $(cat logs/deploy_8svc.pids)          # 8 路全停
+bash deploy_fp8_8svc.sh                     # 推荐 8 路吞吐版（FP8，端口 9000–9007）
+NUM_SERVICES=8 PORT_BASE=9000 ROUNDS=7 bash ../../generate/generate_480p_5s_nsvc.sh
+kill $(cat logs/deploy_fp8_8svc.pids)
 ```
 
 ## 7. 调参入口
 | 优先级 | 杠杆 | 预期 / 风险 |
 |---|---|---|
-| ① | Cache-DiT 阈值 0.04→0.10/0.20 | denoise 占 81%，收益上限可观；**必过质量门** |
-| ② | 768p 压测 | 显存余量 21G 够，但 swap/激活随分辨率涨，先小后大 |
-| ✗ | FP8 | 单卡 80G 不可用（§3），勿再试 |
+| ① | **单卡 768p（FP8）** | 44G 余量下的新战场；swap/激活随分辨率涨，预期 ~200s 量级 |
+| ② | Cache-DiT 阈值 0.04→0.10/0.20 | denoise 占大头，收益可观；**必过质量门** |
+| ✅ | ~~8svc 换 FP8 重测~~ | **已完成（§5a）**：55.6s/路、8.44 视频/分（+11%），FP8 8svc 转正推荐 |
+| ④ | 新代码上重跑 BF16 | 严格分离 FP8 净贡献 vs 新 main 算子融合收益 |
 
 ## 8. 注意事项
 | 事项 | 说明 |
 |---|---|
 | 收敛需 2 个请求 | req1=compile、req2=懒初始化，稳态从 req3 起 |
-| swap 是 I/O 型开销 | 每请求 2 次 62G PCIe 搬运；若其它进程挤占 PCIe 带宽会直接抬高 E2E |
-| 与 2/4 卡不可直比 | 各配置 workload/精度不同；跨卡对比只在同 workload 下有效（480p 链：26.5 vs 52.8s） |
+| swap 是 I/O 型开销 | FP8 每请求 2 次 31G PCIe 搬运（BF16 是 62G）；其它进程挤占 PCIe 会直接抬高 E2E |
+| 与 2/4 卡不可直比 | 各配置 workload/精度不同；跨卡对比只在同 workload 下有效 |
 | 单卡 offload 不吃 TP/USP | 那些切分对单卡无意义；VAE patch-parallel 保持 1 |
+| FP8+cpu-offload 依赖 #5910 | 若回退到 #5910 之前的代码，FP8 会重新加载期 OOM（见 §3） |
