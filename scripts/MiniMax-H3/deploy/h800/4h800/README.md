@@ -32,6 +32,9 @@
 | 候选 A：USP4+TE-TP4，**FP8** | 155.74s | **−10.7%**（FP8 GEMM + 免 HSDP all-gather） | `deploy_tier3_A.sh`（≡`tier2`） |
 | 候选 A + **Cache-DiT**（DBCache, R=0.04） | **114.77s** | **−26%（vs A）/ −34%（vs D）** ← **当前最优** | `deploy_tier4_4b.sh` |
 
+### 2 路并发（`deploy_tier4_4b_2svc.sh`，8 卡每路 4 卡，480p/832×480/5s）
+单请求稳态 **≈16.15s**（全场最低延迟），聚合 7.49 视频/分；三布局终局对比见 §四之「8 卡机三布局对比」。
+
 ### 当前最优配置（114.77s）
 ```bash
 vllm serve .../MiniMax-H3/FL2VA --omni --trust-remote-code --num-gpus 4 \
@@ -57,6 +60,7 @@ vllm serve .../MiniMax-H3/FL2VA --omni --trust-remote-code --num-gpus 4 \
 | `deploy_tier3_{A,B,C,D}.sh` | 并行候选矩阵 | A=155.74 / D=174.47；B、C 未测 |
 | `deploy_tier4_4a.sh` | A + TeaCache(0.17) | 未测 |
 | `deploy_tier4_4b.sh` | A + Cache-DiT(high) | **114.77s（最优）** |
+| `deploy_tier4_4b_2svc.sh` | 2 路并发（8 卡，每路 4 卡 = tier4_4b 配置，端口 9000–9001，master 29500+i） | 480p：**16.15s/路（延迟全场最低）** |
 | `deploy_tier5_attn_flash.sh` | 最优 + 本地 FA3 | 114.77s（参考） |
 | `deploy_tier5_attn_flashhub.sh` | 最优 + HF FA3（`FLASH_ATTN_3_HUB`） | 117.64s（略慢） |
 | `deploy_tier5_attn_flashinfer.sh` | 最优 + FlashInfer | **崩**（H3 不兼容，仅存档） |
@@ -64,6 +68,39 @@ vllm serve .../MiniMax-H3/FL2VA --omni --trust-remote-code --num-gpus 4 \
 | `../../generate/generate.sh` | FL2VA 客户端（固定 prompt/seed，打 8000） | 计时用：warmup 1 + 计时 ≥3 |
 
 ## 四、实践总结
+
+### 2 路并发实测（`deploy_tier4_4b_2svc.sh`，2026-08-19，480p/832×480/5s）
+
+压测口径：`NUM_SERVICES=2 PORT_BASE=9000 bash ../../generate/generate_480p_5s_nsvc.sh`（2 路同时发同一请求，共 7 轮；日志 `logs/deploy_tier4_4b_2svc.svc<N>.gpu<..>.log`，0 报错）。
+
+**每轮 × 2 路 E2E（秒）：**
+
+| 轮次 | svc0 (gpu0-3) | svc1 (gpu4-7) | 均值 | 最大值 |
+|---|---:|---:|---:|---:|
+| 1（compile warmup） | 33.90 | 33.78 | 33.84 | **33.90** |
+| 2 | 15.82 | 16.05 | 15.94 | **16.05** |
+| 3 ⚠️ | 16.98 | 17.10 | 17.04 | **17.10** |
+| 4 | 15.92 | 15.91 | 15.91 | **15.92** |
+| 5 | 15.98 | 15.97 | 15.97 | **15.98** |
+| 6 | 15.92 | 16.08 | 16.00 | **16.08** |
+| 7 | 16.02 | 16.01 | 16.01 | **16.02** |
+| **稳态均值（2–7 轮）** | 16.44 | 16.52 | **16.15** | — |
+
+- 剔除第 3 轮同步抖动（两路同时 +1.1s 后即恢复，外部瞬态）后稳态 ≈ **15.98s**；两路差异仅 ±0.04s，无梯度。
+- 2 路并发几乎无衰减（GPU 常驻权重 + USP4，对照单路 480p 外推基线 ~15.7–15.8s，衰减 ≈ 1–2%）。
+
+**8 卡机三布局终局对比（同 480p/5s workload，全部实测）：**
+
+| 布局 | 单请求稳态 | 聚合吞吐 | tail（最慢路） | 定位 |
+|---|---:|---:|---:|---|
+| 8×1 卡（`../1h800/deploy_8svc.sh`，offload） | 61.5s | 7.61 视频/分 | ~64s | 仅「每路单卡」硬约束 |
+| **4×2 卡（`../2h800/deploy_4svc.sh`，TP2）** | 27.25s | **8.85 视频/分** 🏆 | 28.8s | **吞吐最优** |
+| **2×4 卡（本脚本，USP4）** | **16.15s** 🏆 | 7.49 视频/分 | 17.1s | **延迟最优** |
+
+> 吞吐口径：`路数 ÷ 最后一轮最大延迟 × 60`（同步轮次下整轮墙钟由最慢路决定，故用末轮 max 而非均值；末轮 max：8×1=63.08s、4×2=27.13s、2×4=16.02s）。
+
+- **延迟 vs 吞吐的明确取舍**：2×4 卡把单请求压到 16s（是 4×2 卡的 1.69× 快），但吞吐反而低 15%（7.49 vs 8.85/分）——路数减半而每路加速不到 2×（TP2 26.5s → USP4 16s = **1.66×**，USP4 的 all-to-all + 固定开销吃掉线性）。选型只看「要最快出片（2×4）还是单位时间出片最多（4×2）」。
+- 隐含跨卡数斜率（480p 实测）：TP2 26.5s → USP4 16s，2× 卡换 1.66× 加速——「加卡值不值」的实测依据。
 
 ### ✅ 成功点（带来实测收益）
 1. **FP8 优于 BF16（A vs D，−10.7%）**：FP8 GEMM 在 Hopper 更快，且 A 不带 HSDP 的逐层 all-gather。在线 FP8 确认生效（日志 `Selected CutlassFP8ScaledMMLinearKernel for Fp8PerTensorOnlineLinearMethod`）。
