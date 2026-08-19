@@ -100,7 +100,7 @@
 
 ```bash
 bash deploy.sh                        # 起服务
-bash ../../generate/generate_480p_5s.sh   # 压测：warmup 1 + 计时 ≥3 取末次
+bash ../../generate/generate_480p_5s_nsvc.sh   # 压测：warmup 1 + 计时 ≥3 取末次
 
 bash deploy_4svc.sh                   # 4 路吞吐版（8 卡，每路 2 卡，端口 9000–9003）
 NUM_SERVICES=4 PORT_BASE=9000 bash ../../generate/generate_480p_5s_nsvc.sh   # 4 路并发压测
