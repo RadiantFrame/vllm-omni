@@ -66,4 +66,6 @@ uv pip install vllm==0.26.0
 # Blackwell-only wheels that cannot run on H800.
 uv pip install -e .
 
+uv pip install git+https://github.com/thu-ml/SageAttention.git --no-build-isolation
+
 apt-get install -y ffmpeg

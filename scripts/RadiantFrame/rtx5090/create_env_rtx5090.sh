@@ -28,10 +28,10 @@ export UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 # truly-missing package from pypi manually instead of opening a global extra index.
 # export UV_EXTRA_INDEX_URL=https://pypi.org/simple
 
-# # create a virtual environment
-# uv venv --python 3.12 --seed
-# # activate the virtual environment
-# source .venv/bin/activate
+# create a virtual environment
+uv venv --python 3.12 --seed
+# activate the virtual environment
+source .venv/bin/activate
 
 # install RUST
 export RUSTUP_DIST_SERVER="https://rsproxy.cn"
@@ -55,7 +55,7 @@ registry = "sparse+https://rsproxy.cn/index/"
 git-fetch-with-cli = true
 EOF
 
-# uv pip install vllm==0.26.0
+uv pip install vllm==0.26.0
 
 # from source
 # change [[tool.uv.index]] from default to "https://mirrors.aliyun.com/pypi/simple"?
@@ -64,6 +64,8 @@ EOF
 # Blackwell-only; H800 (Hopper, SM90) uses the FLASH_ATTN backend, which selects
 # FA2/FA3 kernels that ship with the base install. Adding [fa4] would pull
 # Blackwell-only wheels that cannot run on H800.
-# uv pip install -e .
+uv pip install -e .
 
-# apt-get install -y ffmpeg
+uv pip install git+https://github.com/thu-ml/SageAttention.git --no-build-isolation
+
+sudo apt-get install -y ffmpeg
