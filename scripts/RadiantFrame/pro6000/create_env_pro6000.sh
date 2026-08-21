@@ -55,4 +55,6 @@ uv pip install vllm==0.26.0
 # Blackwell-only wheels that cannot run on pro6000.
 uv pip install -e .
 
+uv pip install git+https://github.com/thu-ml/SageAttention.git --no-build-isolation
+
 sudo apt-get install -y ffmpeg

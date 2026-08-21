@@ -70,4 +70,4 @@ vllm serve "${MODEL}" \
   --cache-backend cache_dit \
   --cache-config '{"Fn_compute_blocks":1,"Bn_compute_blocks":0,"max_warmup_steps":4,"residual_diff_threshold":0.04,"max_continuous_cached_steps":1,"enable_taylorseer":false}' \
   --enable-cache-dit-summary \
-  --diffusion-attention-backend CUDNN_ATTN
+  --diffusion-attention-backend SAGE_ATTN
