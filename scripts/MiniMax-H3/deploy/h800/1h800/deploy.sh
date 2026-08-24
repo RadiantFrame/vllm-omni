@@ -1,55 +1,38 @@
 #!/bin/bash
-# MiniMax-H3 FL2VA on 1x H800 (80 GiB HBM, Hopper SM90), host RAM ~2 TiB.
-# Single-card SOTA config, adapted from deploy/pro6000/1pro6000/deploy_fp8.sh.
+# MiniMax-H3 FL2VA on 1x H800 (80 GiB, Hopper SM90), host RAM ~2 TiB.
+# FP8 VARIANT of deploy.sh -- retry enabled by upstream #5910 (d1e230c9),
+# "Enable MiniMax-H3 global FP8 with DLO".
 #
-# Topology: model-level CPU offload (SequentialOffloadHook) -- the FP8 DiT
-# (~31 G) and the BF16 Qwen3-VL encoder (~51.5 G) are mutually exclusive on
-# the GPU; the inactive side sits in (pinned) host memory. Single GPU, so no
-# TP/USP; VAE patch-parallel stays 1 (tiling on by default).
+# Historical context: FP8 + cpu-offload on one 80G card previously OOM'd at
+# load time (logs/h3_0818_1h800.log, 2026-08-18: the per-layer online
+# BF16->FP8 conversion accumulated on GPU alongside the resident encoder and
+# died at 78.05G). #5910 adds _stream_online_quant_weights_to_cpu: each layer
+# is offloaded to CPU AS SOON AS its quantization completes, eliminating the
+# accumulation. This script re-tests FP8 on that fix.
 #
-# Stack (each piece proven on this machine's 2h800/4h800 runs):
-#   --enable-cpu-offload  : the only way H3 fits one 80G card (encoder BF16
-#                           51.5G + FP8 DiT 31G = 83G > 80G if co-resident).
-#   BF16 (NO --quantization): online FP8 is NOT usable on one 80G card --
-#                           MEASURED (logs/h3_0818_1h800.log): the load-time
-#                           BF16->FP8 conversion (scaled_fp8_quant, a CUDA
-#                           kernel) runs per-layer ON GPU during
-#                           _process_weights_after_loading and OOMs at ~78G
-#                           (encoder 51.5G + DiT layers mid-conversion). The
-#                           pro6000 FP8+offload variant only survived because
-#                           that card has 96G. With FP8+DLO also documented
-#                           incompatible, BF16 + cpu-offload is the only
-#                           single-80G-card path. Costs: swap traffic 62G per
-#                           direction (vs 31G) and no FP8 GEMM; quality is
-#                           slightly BETTER (BF16 reference precision).
-#   Cache-DiT "high"      : biggest single win (4xH800: 155.7->114.8s, -26%).
-#   FLASH_ATTN            : = FA3 on Hopper (fa3-fwd), the measured optimum;
-#                           do NOT use pro6000's CUDNN_ATTN here (Blackwell).
-#   regional compile      : default, no --enforce-eager; works with sequential
-#                           offload. First request pays ~30s compile warmup.
+# If it works, expected wins vs deploy.sh (BF16):
+#   - DiT swaps halve (FP8 ~31G vs BF16 ~62G per direction over PCIe)
+#   - FP8 GEMM speedup during denoise
+#   - single-card steady 52.8s (BF16 measured) should drop meaningfully
+#   - quality: officially qualified (LPIPS 0.116 / PSNR 23.6 / audio cosine 0.96)
+# If it still OOMs at load: fall back to deploy.sh (BF16) and record the
+#   failure -- 80G may still be short for the encoder-resident phase.
 #
-# vs pro6000 deploy_fp8.sh, dropped because THIS host has ~2 TiB RAM:
-#   VLLM_OMNI_PIN_CPU_MEMORY=0, systemd-run MemoryMax fuse, systemd-oomd
-#   dance -- all were 125 GiB-host survival gear. Keep pinned copies (faster
-#   H2D); peak host usage ~79G transition + overhead is trivial here.
-#
-# MEASURED (2026-08-18, logs/h3_0818_1h800.log, 480p/832x480/5s, 50 steps):
-#   steady 52.8s (7 consecutive 52.73-53.08s; req#1 109s = compile warmup,
-#   req#2 85.8s = lazy-init settling -- exclude both). denoise ~43s (~81% of
-#   E2E); the rest is encode + swaps + VAE + MP4. 58.9 GiB after model load.
-#   Cross-card: 2xH800 TP2 = 26.5s -> single card is 1.99x (near-perfect halving).
-# Tune: raise cache residual_diff_threshold 0.04 -> 0.10/0.20 for speed ONLY
-#   after passing the quality gate (fixed-seed LPIPS/PSNR + audio cosine).
-# Do NOT add --quantization fp8 here (see BF16 note above): startup OOM on
-#   80G. FP8 single-card would need a 96G+ card (pro6000 path) or a code fix
-#   to move the online-quant conversion off the GPU.
-# Ref2VA is a separate partition: restart with MODEL=.../MiniMax-H3/Ref2VA.
-# Verify in logs: "Cache-dit enabled successfully" /
-#   "Resolved ... 'FLASH_ATTN'" (no "Falling back").
+# Everything else identical to deploy.sh: cpu-offload (mutual exclusivity of
+# encoder/DiT on the GPU), Cache-DiT "high", FLASH_ATTN = FA3 on Hopper,
+# regional compile (no --enforce-eager). First request = compile warmup;
+# request #2 may still be lazy-init settling; measure from #3.
+# NOTE: per #5910 the default --quantization fp8 now covers BOTH the DiT and
+# the Qwen3-VL text decoder (vision tower / VAEs / FP32 projections stay
+# unquantized). Encoder residency therefore shrinks too (~51.5G BF16 ->
+# ~26G FP8), further easing the 80G budget.
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-4}
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export VLLM_OMNI_VIDEO_SYNC_TIMEOUT=1800
+# Reduce allocator fragmentation: makes the ~44G headroom actually usable
+# (suggested by PyTorch's own OOM diagnostics; zero-risk, esp. for 768p).
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Post-denoise stages (DiT swap-out over PCIe + VAE decode + CPU MP4 encode)
 # can exceed the engine's default 30s async-output timeout -> request aborted
 # AFTER the video was actually generated.
@@ -58,7 +41,7 @@ export VLLM_OMNI_ASYNC_OUTPUT_TIMEOUT=300
 MODEL=${MODEL:-/data/models/modelscope/MiniMax/MiniMax-H3/FL2VA}
 PORT=${PORT:-9000}
 
-echo "Starting MiniMax-H3 FL2VA on 1xH800 (cpu-offload + BF16 + Cache-DiT high + FA3), port $PORT ..."
+echo "Starting MiniMax-H3 FL2VA on 1xH800 (cpu-offload + FP8 + Cache-DiT high + FA3), port $PORT ..."
 
 # shellcheck disable=SC2086
 vllm serve "${MODEL}" \
@@ -66,6 +49,7 @@ vllm serve "${MODEL}" \
   --host 0.0.0.0 --port "${PORT}" \
   --num-gpus 1 \
   --enable-cpu-offload \
+  --quantization fp8 \
   --cache-backend cache_dit \
   --cache-config '{"Fn_compute_blocks":1,"Bn_compute_blocks":0,"max_warmup_steps":4,"residual_diff_threshold":0.04,"max_continuous_cached_steps":1,"enable_taylorseer":false}' \
   --enable-cache-dit-summary \
