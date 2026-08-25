@@ -1,27 +1,48 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Call the running vLLM-Omni MiniMax-H3 FL2VA service (deploy.sh, port 8000)
-# with the same H3-Context-IR prompt + first-frame keyframe + seed as
-# ../sglang/scripts/MiniMax-H3/h800/generate.sh.
+# Fan-out the 480p/5s FL2VA request to N services CONCURRENTLY (one background
+# curl per service), repeated for R rounds. Hardware-agnostic: services are
+# identified purely by PORT/HOST — any vLLM-Omni video service works,
+# regardless of which GPUs or deploy script started it. Results go to ./outputs
+# with per-service/per-round names.
 #
-# sglang vs vLLM-Omni differences:
-#   - sglang: JSON body -> POST /v1/videos (async) + poll + GET .../content, port 30010
-#   - vLLM-Omni: multipart form -> POST /v1/videos/sync (returns raw MP4), port 8000
-#   - keyframe: sglang sends a CDN URL; vLLM-Omni's input_reference is a file upload,
-#     so we download the CDN image to a temp file first (or set FIRST_FRAME to a local
-#     path to skip the download).
-#   - fl2va task / duration / audio_flow_shift go in extra_params (per the H3 recipe).
+# H3 services need ~7 requests before inference latency converges in the
+# server logs (req1 = compile warmup, req2 = lazy-init settling, steady from
+# req3; a few configs need more). ROUNDS defaults to 7 so one invocation
+# produces a converged per-round measurement series.
+#
+# Services are derived from PORT_BASE + NUM_SERVICES (contiguous ports):
+#   bash generate_480p_fanout.sh                              # 1 svc, 7 rounds
+#   NUM_SERVICES=4 bash generate_480p_fanout.sh               # 4 svc, 7 rounds
+#   NUM_SERVICES=8 PORT_BASE=9000 bash generate_480p_fanout.sh
+# For non-contiguous ports, set PORTS explicitly (overrides base/count):
+#   PORTS="9000 9002" bash generate_480p_fanout.sh
 
-BASE_URL="${BASE_URL:-http://localhost:9000}"
-API_URL="${API_URL:-${BASE_URL}/v1/videos/sync}"
-OUTPUT="${OUTPUT:-outputs/fl2va.mp4}"
-mkdir -p "$(dirname "$OUTPUT")"
+# Services to hit: contiguous ports derived from PORT_BASE + NUM_SERVICES
+# (defaults match deploy/rtx5090/2rtx5090/deploy_tier0_2svc.sh:
+# PORT_BASE=9000, 2 services). PORTS overrides both for explicit port lists.
+PORT_BASE="${PORT_BASE:-9000}"
+NUM_SERVICES="${NUM_SERVICES:-1}"
+if [ -n "${PORTS:-}" ]; then
+    read -r -a PORTS <<<"$PORTS"
+else
+    PORTS=()
+    for ((i = 0; i < NUM_SERVICES; i++)); do
+        PORTS+=("$((PORT_BASE + i))")
+    done
+fi
+
+HOST="${HOST:-localhost}"
+OUT_DIR="${OUT_DIR:-./outputs}"
+ROUNDS="${ROUNDS:-7}"
 SEED="${SEED:-0}"
-DURATION="${DURATION:-8}"
+DURATION="${DURATION:-5}"
 KEYFRAME_URL="${KEYFRAME_URL:-https://cdn.hailuoai.com/prod/hailuo_demo/testsets/H3_AA_I2VA/gallery/sr_v17_variants_seed42_43_20260724/inputs/4a3a90bf9100_KDmcbkhzYo5sjjxr9FqcVmWVnzb.png}"
 
-# Same H3-Context-IR prompt as the sglang script (newlines preserved).
+mkdir -p "$OUT_DIR"
+
+# H3-Context-IR prompt (newlines preserved; identical across both fan-out clients).
 PROMPT=$(cat <<'EOF'
 For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
 
@@ -33,7 +54,7 @@ non_diegetic_music: A gentle, heartwarming acoustic guitar melody plays softly i
 EOF
 )
 
-# Resolve the first-frame keyframe (vLLM-Omni needs a file upload).
+# Resolve the first-frame keyframe ONCE (shared by all services).
 created_temp=0
 if [ -n "${FIRST_FRAME:-}" ] && [ -f "${FIRST_FRAME}" ]; then
     keyframe="$FIRST_FRAME"
@@ -46,29 +67,70 @@ fi
 cleanup() { [ "$created_temp" = "1" ] && rm -f "$keyframe"; }
 trap cleanup EXIT
 
-echo "Posting FL2VA request to $API_URL (seed=$SEED, duration=${DURATION}s)..."
-http_code=$(curl -sS -X POST "$API_URL" \
-    -F "prompt=${PROMPT}" \
-    -F "fps=24" \
-    -F "num_inference_steps=50" \
-    -F "flow_shift=12" \
-    -F "seed=${SEED}" \
-    -F "short_edge=768" \
-    -F "aspect_ratio=auto" \
-    -F "extra_params={\"task\":\"fl2va\",\"duration\":${DURATION},\"audio_flow_shift\":3.0}" \
-    -F "input_reference=@${keyframe};type=image/png" \
-    -o "$OUTPUT" \
-    -w '%{http_code}')
+echo "Posting 480p/5s FL2VA request to ${#PORTS[@]} service(s): ${PORTS[*]}, ${ROUNDS} round(s) (concurrent fan-out per round)..."
+echo ""
 
-if [ "$http_code" != "200" ]; then
-    echo "Request failed (HTTP $http_code). Response body:" >&2
-    cat "$OUTPUT" >&2 || true
-    exit 1
-fi
+fail=0
+for ((r = 1; r <= ROUNDS; r++)); do
+    echo "=== Round ${r}/${ROUNDS} ==="
 
-echo "Saved video -> $OUTPUT"
-if command -v ffprobe >/dev/null 2>&1; then
-    vcodec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$OUTPUT" 2>/dev/null || true)
-    acodec=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "$OUTPUT" 2>/dev/null || true)
-    echo "streams: video=${vcodec:-none} audio=${acodec:-none}"
-fi
+    # Launch one background curl per service. Each writes its MP4 to a uniquely
+    # named file and its HTTP status to a sidecar file.
+    declare -a PID_ARR STAT_ARR OUT_ARR
+    for i in "${!PORTS[@]}"; do
+        port="${PORTS[$i]}"
+        out="$OUT_DIR/fl2va_r${r}_svc${i}_port${port}_seed${SEED}.mp4"
+        stat="$OUT_DIR/.status_r${r}_svc${i}_port${port}"
+        : > "$stat"
+        OUT_ARR[$i]="$out"
+        STAT_ARR[$i]="$stat"
+
+        ( curl -sS -X POST "http://${HOST}:${port}/v1/videos/sync" \
+            -F "prompt=${PROMPT}" \
+            -F "fps=24" \
+            -F "num_inference_steps=50" \
+            -F "flow_shift=12" \
+            -F "seed=${SEED}" \
+            -F "width=832" \
+            -F "height=480" \
+            -F "extra_params={\"task\":\"fl2va\",\"duration\":${DURATION},\"audio_flow_shift\":3.0}" \
+            -F "input_reference=@${keyframe};type=image/png" \
+            -o "$out" \
+            -w '%{http_code}' > "$stat" ) &
+        PID_ARR[$i]=$!
+        echo "  service $i -> http://${HOST}:${port}  (pid ${PID_ARR[$i]})  -> $out"
+    done
+
+    echo ""
+    echo "Waiting for all ${#PORTS[@]} request(s) of round ${r} to finish..."
+    for i in "${!PORTS[@]}"; do
+        if ! wait "${PID_ARR[$i]}"; then
+            echo "  service $i (port ${PORTS[$i]}): curl exited non-zero" >&2
+            fail=1
+        fi
+    done
+
+    echo "Round ${r} results:"
+    for i in "${!PORTS[@]}"; do
+        port="${PORTS[$i]}"
+        out="${OUT_ARR[$i]}"
+        code="$(cat "${STAT_ARR[$i]}" 2>/dev/null || echo "?")"
+        if [ "$code" = "200" ] && [ -s "$out" ]; then
+            line="  [OK]  r${r} svc$i port=$port  -> $out"
+            if command -v ffprobe >/dev/null 2>&1; then
+                vc=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,nb_frames,r_frame_rate -of csv=p=0 "$out" 2>/dev/null | head -1)
+                line="$line  [$vc]"
+            fi
+            echo "$line"
+        else
+            echo "  [FAIL] r${r} svc$i port=$port  http=$code  (see $out for error body)"
+            fail=1
+        fi
+        rm -f "${STAT_ARR[$i]}"
+    done
+    echo ""
+done
+
+if [ "$fail" = "1" ]; then exit 1; fi
+echo "All done: ${ROUNDS} rounds x ${#PORTS[@]} service(s). Outputs in $OUT_DIR/ (fl2va_r<R>_svc<N>_...)"
+echo "Read steady-state e2e_total_ms from each service log from round ~3 onward (rounds 1-2 are warmup/settling)."
