@@ -67,7 +67,6 @@ for i in "${!GPUS[@]}"; do
       --omni --trust-remote-code \
       --host 0.0.0.0 --port "$port" \
       --num-gpus 1 \
-      --enable-cpu-offload \
       --quantization fp8 \
       --cache-backend cache_dit \
       --cache-config "$CACHE_CONFIG" \

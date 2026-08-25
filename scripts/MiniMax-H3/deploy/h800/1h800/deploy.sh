@@ -48,7 +48,6 @@ vllm serve "${MODEL}" \
   --omni --trust-remote-code \
   --host 0.0.0.0 --port "${PORT}" \
   --num-gpus 1 \
-  --enable-cpu-offload \
   --quantization fp8 \
   --cache-backend cache_dit \
   --cache-config '{"Fn_compute_blocks":1,"Bn_compute_blocks":0,"max_warmup_steps":4,"residual_diff_threshold":0.04,"max_continuous_cached_steps":1,"enable_taylorseer":false}' \
