@@ -280,6 +280,35 @@ class MiniMaxH3VideoVAE(nn.Module, DistributedVaeMixin):
         ).float()
         return rows, shape
 
+    # Frames per processor.revert_tensor call. revert_tensor materializes
+    # several whole-video temporaries on device (transform output + clamp +
+    # contiguous); for long videos (1344x768/15s ~= 360 frames ~= 4.2 GiB per
+    # fp32 copy) that OOMs 32 GiB cards after the denoise loop already
+    # finished. Chunking bounds the temporaries to one chunk (~0.4 GiB).
+    _REVERT_CHUNK_FRAMES = 32
+
+    def _revert_tensor_chunked(self, decoded: torch.Tensor) -> torch.Tensor:
+        """Run processor.revert_tensor chunk-wise along time, landing on host RAM.
+
+        Each finished chunk is moved to CPU immediately: the downstream
+        post-process does ``.cpu()`` first thing anyway, and the pipeline's
+        crop (``video[..., :height, :width]``) works fine on host tensors.
+        Non-5D inputs (small/legacy shapes) take the original single-shot path.
+        """
+        if decoded.ndim != 5:
+            return self.model.processor.revert_tensor(decoded)
+        t = int(decoded.shape[2])
+        if t <= self._REVERT_CHUNK_FRAMES:
+            return self.model.processor.revert_tensor(decoded)
+        chunks = []
+        for i in range(0, t, self._REVERT_CHUNK_FRAMES):
+            rev = self.model.processor.revert_tensor(
+                decoded[:, :, i : i + self._REVERT_CHUNK_FRAMES]
+            )
+            chunks.append(rev.to("cpu"))
+            del rev
+        return torch.cat(chunks, dim=2)
+
     @torch.inference_mode()
     def decode_latent(self, latent: torch.Tensor) -> torch.Tensor:
         channels = int(self.config_dict["latent_channels"])
@@ -294,7 +323,7 @@ class MiniMaxH3VideoVAE(nn.Module, DistributedVaeMixin):
             dtype=latent.dtype,
         ).view(1, channels, 1, 1, 1)
         decoded = self.model.decode_base(latent * std + mean)
-        frames = self.model.processor.revert_tensor(decoded)
+        frames = self._revert_tensor_chunked(decoded)
         if frames.ndim == 4:
             frames = frames.unsqueeze(0).transpose(1, 2)
         if frames.ndim != 5:
