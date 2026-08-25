@@ -58,4 +58,4 @@ SM 频率被压到 **2235 MHz**（标称 max 3090），温度 88°C。步延迟�
 | 文件 | 配置 | 实测 |
 |---|---|---|
 | `deploy.sh` | FP8 全驻留 + Cache-DiT + CUDNN_ATTN（**主推**） | ✅ 稳态 E2E ~89.7s（480p/5s） |
-| 客户端 | `../../generate/generate_480p_5s_nsvc.sh`（`BASE_URL=http://localhost:9000`） | |
+| 客户端 | `../../generate/generate_480p_fanout.sh`（`BASE_URL=http://localhost:9000`） | |

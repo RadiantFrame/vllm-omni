@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Fan-out the 480p/5s FL2VA request to N services CONCURRENTLY (one background
-# curl per service), repeated for R rounds. Hardware-agnostic: services are
-# identified purely by PORT/HOST — any vLLM-Omni video service works,
-# regardless of which GPUs or deploy script started it. Results go to ./outputs
-# with per-service/per-round names.
+# Fan-out the 768p FL2VA request (short_edge=768, aspect from keyframe) to N
+# services CONCURRENTLY (one background curl per service), repeated for R
+# rounds. Hardware-agnostic: services are identified purely by PORT/HOST —
+# any vLLM-Omni video service works, regardless of which GPUs or deploy
+# script started it. Results go to ./outputs with per-service/per-round names.
+# Request shape: 768p via short_edge=768 + auto aspect (DURATION default 15 to match
+# the current 768p benchmark; override with DURATION=8 for the 8s shape).
 #
 # H3 services need ~7 requests before inference latency converges in the
 # server logs (req1 = compile warmup, req2 = lazy-init settling, steady from
@@ -13,15 +15,15 @@ set -euo pipefail
 # produces a converged per-round measurement series.
 #
 # Services are derived from PORT_BASE + NUM_SERVICES (contiguous ports):
-#   bash generate_480p_5s_nsvc.sh                              # 1 svc, 7 rounds
-#   NUM_SERVICES=4 bash generate_480p_5s_nsvc.sh               # 4 svc, 7 rounds
-#   NUM_SERVICES=8 PORT_BASE=9000 bash generate_480p_5s_nsvc.sh
+#   bash generate_768p_fanout.sh                              # 1 svc, 7 rounds
+#   NUM_SERVICES=4 bash generate_768p_fanout.sh               # 4 svc, 7 rounds
+#   NUM_SERVICES=8 PORT_BASE=9000 bash generate_768p_fanout.sh
 # For non-contiguous ports, set PORTS explicitly (overrides base/count):
-#   PORTS="9000 9002" bash generate_480p_5s_nsvc.sh
+#   PORTS="9000 9002" bash generate_768p_fanout.sh
 
 # Services to hit: contiguous ports derived from PORT_BASE + NUM_SERVICES
-# (defaults match deploy/rtx5090/2rtx5090/deploy_tier0_2svc.sh:
-# PORT_BASE=9000, 2 services). PORTS overrides both for explicit port lists.
+# (defaults match the current deploy scripts: PORT_BASE=9000, 1 service).
+# PORTS overrides both for explicit port lists.
 PORT_BASE="${PORT_BASE:-9000}"
 NUM_SERVICES="${NUM_SERVICES:-1}"
 if [ -n "${PORTS:-}" ]; then
@@ -37,12 +39,12 @@ HOST="${HOST:-localhost}"
 OUT_DIR="${OUT_DIR:-./outputs}"
 ROUNDS="${ROUNDS:-7}"
 SEED="${SEED:-0}"
-DURATION="${DURATION:-5}"
+DURATION="${DURATION:-15}"
 KEYFRAME_URL="${KEYFRAME_URL:-https://cdn.hailuoai.com/prod/hailuo_demo/testsets/H3_AA_I2VA/gallery/sr_v17_variants_seed42_43_20260724/inputs/4a3a90bf9100_KDmcbkhzYo5sjjxr9FqcVmWVnzb.png}"
 
 mkdir -p "$OUT_DIR"
 
-# Same H3-Context-IR prompt as generate_480p_5s.sh (newlines preserved).
+# H3-Context-IR prompt (newlines preserved).
 PROMPT=$(cat <<'EOF'
 For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
 
@@ -67,7 +69,7 @@ fi
 cleanup() { [ "$created_temp" = "1" ] && rm -f "$keyframe"; }
 trap cleanup EXIT
 
-echo "Posting 480p/5s FL2VA request to ${#PORTS[@]} service(s): ${PORTS[*]}, ${ROUNDS} round(s) (concurrent fan-out per round)..."
+echo "Posting 768p/${DURATION}s FL2VA request to ${#PORTS[@]} service(s): ${PORTS[*]}, ${ROUNDS} round(s) (concurrent fan-out per round)..."
 echo ""
 
 fail=0
@@ -91,8 +93,8 @@ for ((r = 1; r <= ROUNDS; r++)); do
             -F "num_inference_steps=50" \
             -F "flow_shift=12" \
             -F "seed=${SEED}" \
-            -F "width=832" \
-            -F "height=480" \
+            -F "short_edge=768" \
+            -F "aspect_ratio=auto" \
             -F "extra_params={\"task\":\"fl2va\",\"duration\":${DURATION},\"audio_flow_shift\":3.0}" \
             -F "input_reference=@${keyframe};type=image/png" \
             -o "$out" \
