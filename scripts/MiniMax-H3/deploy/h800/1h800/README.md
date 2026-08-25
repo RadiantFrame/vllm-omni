@@ -75,11 +75,12 @@
 | `MODEL` | `.../MiniMax-H3/FL2VA` | Ref2VA 换 `.../Ref2VA` 重启（勿同跑） |
 
 ```bash
-bash deploy.sh                          # 推荐：FP8，52.0s
-bash ../../generate/generate_480p_5s_nsvc.sh     # 默认 1 路 × 7 轮（收敛需 2 个请求，稳态从第 3 轮起读日志）
+bash deploy_fp8.sh                          # 推荐：FP8，50.5s
+bash deploy.sh                              # 质量参考：BF16，52.8s
+bash ../../generate/generate_480p_fanout.sh     # 默认 1 路 × 7 轮（收敛需 2 个请求，稳态从第 3 轮起读日志）
 
-bash deploy_8svc.sh                     # 推荐 8 路吞吐版（端口 9000–9007）
-NUM_SERVICES=8 PORT_BASE=9000 ROUNDS=7 bash ../../generate/generate_480p_5s_nsvc.sh
+bash deploy_fp8_8svc.sh                     # 推荐 8 路吞吐版（FP8，端口 9000–9007）
+NUM_SERVICES=8 PORT_BASE=9000 ROUNDS=7 bash ../../generate/generate_480p_fanout.sh
 kill $(cat logs/deploy_fp8_8svc.pids)
 ```
 
