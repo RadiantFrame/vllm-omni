@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Profiler: PROFILER=1 bash deploy.sh
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+export VLLM_OMNI_VIDEO_SYNC_TIMEOUT=1800
+
+PROFILER_FLAGS=""
+if [ "${PROFILER:-0}" = "1" ]; then
+    PROFILER_FLAGS="--enable-diffusion-pipeline-profiler"
+fi
+
+# shellcheck disable=SC2086
+vllm serve /data/models/modelscope/MiniMax/MiniMax-H3/FL2VA \
+  --omni --trust-remote-code \
+  --host 0.0.0.0 --port 9000 \
+  --num-gpus 8 \
+  --tensor-parallel-size 4 \
+  --text-encoder-tp-size 8 \
+  --usp 2 --ring 1 \
+  --vae-patch-parallel-size 8 \
+  --vae-parallel-mode tile --vae-use-tiling \
+  --quantization fp8 \
+  --enable-cpu-offload \
+  --diffusion-compile-granularity regional \
+  --num-weight-load-threads 16 \
+  --cache-backend cache_dit \
+  --cache-config '{"Fn_compute_blocks":1,"Bn_compute_blocks":0,"max_warmup_steps":4,"residual_diff_threshold":0.04,"max_continuous_cached_steps":1,"enable_taylorseer":false}' \
+  --enable-cache-dit-summary \
+  $PROFILER_FLAGS \
+  --diffusion-attention-backend SAGE_ATTN
