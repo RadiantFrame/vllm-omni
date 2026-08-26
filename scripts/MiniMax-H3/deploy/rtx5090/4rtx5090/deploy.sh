@@ -1,35 +1,39 @@
 #!/bin/bash
 # MiniMax-H3 FL2VA on 4x RTX 5090 (32 GiB HBM each), single service.
-# PRIMARY / SAFE config: TP4 + DLO(no-AllGather) + BF16 + Cache-DiT.
+# SPEED VARIANT (A/B against deploy.sh): TP4 + online FP8 + NO DLO +
+# regional torch.compile + cuda graph + Cache-DiT.
 #
-# Why this shape (no validated 4x5090 topology exists in-repo; ported from the
-# constraints verified for 2x5090 + the 4-GPU H800 candidates):
-#   - TP4 shards DiT weights 4-way (~15.5 GiB/rank) — the only TP degree that
-#     lets BF16 fit on 32 GiB cards.
-#   - text-encoder-tp-size 4: the Qwen3-VL encoder (~51.5 GiB BF16) is the
-#     memory hotspot and defaults onto rank 0; TE-TP4 shards it 4-way
-#     (64 attn heads / 8 KV heads both divisible by 4).
-#   - usp 1 / ring 1: TP4 already fills the DiT group (4); 480p activations are
-#     small, no need for sequence parallelism. (--usp 4 --tp 1 is an anti-pattern:
-#     it replicates the full DiT on every card.)
-#   - vae-patch-parallel-size 4 (must equal the DiT group) + native tile mode.
-#   - DLO no-AllGather is the only BF16-compatible memory path; it also stages
-#     the encoder/VAE on demand. resident_layers requires --dlo-no-use-allgather.
-#   - enforce-eager: DLO streaming hooks break cuda-graph capture (mandatory).
+# Potentially the fastest 4x5090 config (no H2D streaming + cuda graph +
+# FP8 ~12% + Cache-DiT), but UNVALIDATED on 5090 — run the validation gates
+# below before trusting it. If any gate fails, fall back to deploy.sh.
 #
-# Tuning:
-#   - resident_layers: at TP4 each resident block is ~half the TP2 size, so the
-#     20 default is very safe. 480p is compute-bound (raising it gave no latency
-#     gain in earlier tests), so keep 20 unless profiling shows H2D overhead.
-#   - Real speed levers on this path: Cache-DiT residual_diff_threshold
-#     (0.04 -> 0.20 measured ~16% faster, re-check quality), or switch to the
-#     FP8 variant (deploy_fp8.sh) for regional-compile + cuda-graph + FP8.
+# Diff vs deploy.sh (the safe primary):
+#   - DROPS: --enable-distributed-layerwise-offload, --dlo-no-use-allgather,
+#           --dlo-resident-layers, --enforce-eager
+#   - ADDS:  --quantization fp8  (DiT W8A8 online; encoder/VAE stay BF16)
+#   - Dropping --enforce-eager enables the default regional torch.compile +
+#     cuda graph (the main speedup source). FP8 is incompatible with DLO, so
+#     the two configs are mutually exclusive.
 #
-# Profiler: PROFILER=1 bash deploy.sh  (enables --enable-diffusion-pipeline-profiler)
+# !!! STATUS (2026-08-14, RTX 5090 32 GiB): CONFIRMED OOM — DO NOT USE on 4x5090 !!!
+# Online FP8 loads BF16 weights to GPU then converts to FP8 per layer, so BF16
+# original + FP8 output coexist transiently. At TP4 the BF16 model alone is
+# ~38.8 GiB/card > 31.4 GiB -> OOM in fp8.py:159 scaled_fp8_quant during
+# process_weights_after_loading. The FP8 kernel itself IS fine on 5090
+# (CutlassFP8ScaledMMLinearKernel + DeepGEMM init OK); this is purely a
+# capacity limit. Not fixable by tuning. Use deploy.sh (DLO+BF16) instead.
+# This script is kept for hosts with >=80 GiB cards. See README.md.
+# The only way to get FP8 speed on 5090: an OFFLINE pre-quantized FP8 DiT
+# checkpoint + DLO (no load-time transient, compatible with DLO). Not yet built.
+#
+# Profiler: PROFILER=1 bash deploy_fp8.sh
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
 
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
+# Anti-fragmentation allocator: 768p/15s OOMed with 3.7G reserved-but-unallocated
+# (1.5G alloc failed with 1.2G free + fragmentation); expandable segments fix that.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export VLLM_OMNI_VIDEO_SYNC_TIMEOUT=1800
 
 PROFILER_FLAGS=""
@@ -40,19 +44,19 @@ fi
 # shellcheck disable=SC2086
 vllm serve /data/models/modelscope/MiniMax/MiniMax-H3/FL2VA \
   --omni --trust-remote-code \
-  --host 0.0.0.0 --port 8000 \
+  --host 0.0.0.0 --port 9000 \
   --num-gpus 4 \
   --tensor-parallel-size 4 \
   --text-encoder-tp-size 4 \
   --usp 1 --ring 1 \
   --vae-patch-parallel-size 4 \
   --vae-parallel-mode tile --vae-use-tiling \
-  --enable-distributed-layerwise-offload --dlo-no-use-allgather \
-  --dlo-resident-layers 20 \
-  --enforce-eager \
+  --quantization fp8 \
+  --enable-cpu-offload \
   --num-weight-load-threads 8 \
   --cache-backend cache_dit \
   --cache-config '{"Fn_compute_blocks":1,"Bn_compute_blocks":0,"max_warmup_steps":4,"residual_diff_threshold":0.04,"max_continuous_cached_steps":1,"enable_taylorseer":false}' \
   --enable-cache-dit-summary \
+  --diffusion-compile-granularity regional \
   $PROFILER_FLAGS \
-  --diffusion-attention-backend CUDNN_ATTN
+  --diffusion-attention-backend SAGE_ATTN
