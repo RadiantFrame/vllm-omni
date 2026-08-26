@@ -44,7 +44,7 @@ fi
 # shellcheck disable=SC2086
 vllm serve /data/models/modelscope/MiniMax/MiniMax-H3/FL2VA \
   --omni --trust-remote-code \
-  --host 0.0.0.0 --port 9000 \
+  --host 0.0.0.0 --port "${PORT:-9000}" \
   --num-gpus 4 \
   --tensor-parallel-size 4 \
   --text-encoder-tp-size 4 \
