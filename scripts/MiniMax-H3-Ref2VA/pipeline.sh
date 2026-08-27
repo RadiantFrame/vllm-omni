@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."   # repo root, so paths work from anywhere
 
 DEPLOY=${DEPLOY:-scripts/MiniMax-H3/deploy/rtx5090/4rtx5090/deploy.sh}
-GENERATE=${GENERATE:-scripts/MiniMax-H3/generate/generate_768p_fanout.sh}
+GENERATE=${GENERATE:-scripts/MiniMax-H3-Ref2VA/generate/generate.sh}
 PORT=${PORT:-9000}
 LOG=${LOG:-logs/pipeline_deploy.log}
 HEALTH_TIMEOUT_MIN=${HEALTH_TIMEOUT_MIN:-15}   # model load + first init can take minutes
