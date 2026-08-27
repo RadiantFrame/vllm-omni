@@ -39,7 +39,7 @@ fi
 
 HOST="${HOST:-localhost}"
 OUT_DIR="${OUT_DIR:-./outputs}"
-ROUNDS="${ROUNDS:-7}"
+ROUNDS="${ROUNDS:-5}"
 SEED="${SEED:-0}"
 DURATION="${DURATION:-15}"
 TASK_TYPE="${TASK_TYPE:-ref2va}"

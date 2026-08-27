@@ -256,6 +256,9 @@ generated/
 output_*/
 /tests/e2e/accuracy/artifacts/
 
+# input files
+inputs/
+
 # Configuration overrides
 configs/local.yaml
 configs/production.yaml
