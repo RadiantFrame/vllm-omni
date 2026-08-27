@@ -53,7 +53,7 @@
 
 ## 5. 4 路并发实测（`deploy_4svc.sh`，2026-08-19，480p/832×480/5s）
 
-压测口径：`NUM_SERVICES=4 PORT_BASE=9000 bash ../../generate/generate_480p_fanout.sh`（4 路同时发同一请求，共 8 轮；日志 `logs/deploy_4svc.svc<N>.gpu<..>.log`，0 报错）。
+压测口径：`NUM_SERVICES=4 PORT_BASE=9000 bash ../../generate/generate.sh`（4 路同时发同一请求，共 8 轮；日志 `logs/deploy_4svc.svc<N>.gpu<..>.log`，0 报错）。
 
 **每轮 × 4 路 E2E（秒）：**
 
@@ -95,10 +95,10 @@
 
 ```bash
 bash deploy.sh                        # 起服务
-bash ../../generate/generate_480p_fanout.sh   # 压测：warmup 1 + 计时 ≥3 取末次
+bash ../../generate/generate.sh   # 压测：warmup 1 + 计时 ≥3 取末次
 
 bash deploy_4svc.sh                   # 4 路吞吐版（8 卡，每路 2 卡，端口 9000–9003）
-NUM_SERVICES=4 PORT_BASE=9000 bash ../../generate/generate_480p_fanout.sh   # 4 路并发压测
+NUM_SERVICES=4 PORT_BASE=9000 bash ../../generate/generate.sh   # 4 路并发压测
 kill $(cat logs/deploy_4svc.pids)     # 4 路全停
 ```
 

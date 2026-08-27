@@ -27,10 +27,10 @@ see `deploy/rtx5090/4rtx5090/README.md` for the format.
 
 ```bash
 # start a service (pick a hardware dir), then from anywhere:
-bash scripts/MiniMax-H3/generate/generate_480p_fanout.sh                    # 480p, 1 svc -> :9000
-NUM_SERVICES=4 PORT_BASE=9000 bash scripts/MiniMax-H3/generate/generate_480p_fanout.sh   # 4-way
-bash scripts/MiniMax-H3/generate/generate_768p_fanout.sh                    # 768p single, default 15s
-DURATION=8 NUM_SERVICES=2 bash scripts/MiniMax-H3/generate/generate_768p_fanout.sh       # 768p 8s, 2-way
+bash scripts/MiniMax-H3/generate/generate.sh                    # 480p, 1 svc -> :9000
+NUM_SERVICES=4 PORT_BASE=9000 bash scripts/MiniMax-H3/generate/generate.sh   # 4-way
+bash scripts/MiniMax-H3/generate/generate.sh                    # 768p single, default 15s
+DURATION=8 NUM_SERVICES=2 bash scripts/MiniMax-H3/generate/generate.sh       # 768p 8s, 2-way
 ```
 
 Client scripts accept env overrides (`BASE_URL`/`PORT_BASE`/`NUM_SERVICES`/`PORTS`,

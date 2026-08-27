@@ -2,7 +2,7 @@
 
 > 8×RTX 5090(32 GiB/卡,主机 RAM 503 GiB)机器,每路服务固定 2 卡。
 > 压测形状:FL2VA **480p(832×480)/ 5s / 50 步**;Cache-DiT 用官方推荐档 **R=0.04**。
-> 客户端 `../../generate/generate_480p_fanout.sh`(`NUM_SERVICES` / `PORT_BASE` 控制)。
+> 客户端 `../../generate/generate.sh`(`NUM_SERVICES` / `PORT_BASE` 控制)。
 
 ## 一、服务配置(`deploy.sh`)
 
@@ -81,5 +81,5 @@ $$4 ÷ 79.06 × 60 = \textbf{3.04 视频/分}$$
 | `deploy.sh` | ✅ **推荐(单路)** | 上述配置;稳态 78.0s |
 | `deploy_4svc.sh` | ✅ **推荐(吞吐)** | 4 路并发(端口 9000–9003,master 29500+i);3.04 视频/分 |
 
-压测:`NUM_SERVICES=N PORT_BASE=9000 bash ../../generate/generate_480p_fanout.sh`
+压测:`NUM_SERVICES=N PORT_BASE=9000 bash ../../generate/generate.sh`
 (单路 `NUM_SERVICES=1`)。
