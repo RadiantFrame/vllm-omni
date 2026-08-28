@@ -1,4 +1,12 @@
-# MiniMax-H3 4×H800 聚合吞吐记录
+# MiniMax-H3 Ref2VA 4×H800 部署
+
+`deploy.sh` 使用 `Ref2VA` checkpoint，拓扑为 USP4 + Text Encoder TP4 +
+VAE Patch Parallel 4 + FP8 + Cache-DiT。默认占用 GPU 0-3，可通过
+`CUDA_VISIBLE_DEVICES` 覆盖。
+
+> 注意：2026-08-21 之前本目录的 `deploy.sh` 误用了 `FL2VA` checkpoint。
+> 下方既有吞吐数据属于 FL2VA 历史记录，不能作为 Ref2VA 性能承诺；
+> Ref2VA 需要用真实图片/视频参考请求重新建立基线。
 
 ## 2026-08-21：单路（`deploy.sh`，480p/832×480/5s）
 **≈ 3.97 视频/分**（1 ÷ 末轮 15.108s × 60；日志 `logs/deploy_4h800_0821.log`，7 请求 0 报错，稳态 15.10s/请求）
