@@ -39,7 +39,7 @@ def _indexed_scale_shift_kernel(
     row_offset,
     block_n: tl.constexpr,
 ):
-    row = tl.program_id(0) + row_offset
+    row = tl.program_id(0).to(tl.int64) + row_offset
     columns = tl.arange(0, block_n)
     mask = columns < hidden_size
     index = tl.load(indices_ptr + row * stride_indices)
@@ -71,7 +71,7 @@ def _indexed_gate_kernel(
     row_offset,
     block_n: tl.constexpr,
 ):
-    row = tl.program_id(0) + row_offset
+    row = tl.program_id(0).to(tl.int64) + row_offset
     columns = tl.arange(0, block_n)
     mask = columns < hidden_size
     index = tl.load(indices_ptr + row * stride_indices)
@@ -104,7 +104,7 @@ def _rms_norm_indexed_scale_shift_kernel(
     row_offset,
     block_n: tl.constexpr,
 ):
-    row = tl.program_id(0) + row_offset
+    row = tl.program_id(0).to(tl.int64) + row_offset
     columns = tl.arange(0, block_n)
     mask = columns < hidden_size
     index = tl.load(indices_ptr + row * stride_indices)
@@ -145,7 +145,7 @@ def _indexed_gate_rms_norm_scale_shift_kernel(
     row_offset,
     block_n: tl.constexpr,
 ):
-    row = tl.program_id(0) + row_offset
+    row = tl.program_id(0).to(tl.int64) + row_offset
     columns = tl.arange(0, block_n)
     mask = columns < hidden_size
     index = tl.load(indices_ptr + row * stride_indices)
