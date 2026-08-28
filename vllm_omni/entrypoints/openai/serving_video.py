@@ -89,6 +89,7 @@ class VideoGenerationArtifacts:
     stage_durations: dict[str, float]
     peak_memory_mb: float
     metrics: dict[str, object] | None = None
+    e2e_total_ms: float | None = None
 
 
 def _video_metadata_from_artifacts(artifacts: VideoGenerationArtifacts) -> dict[str, object]:
@@ -455,6 +456,7 @@ class OmniOpenAIServingVideo:
             stage_durations=self._extract_stage_durations(result),
             peak_memory_mb=self._extract_peak_memory_mb(result),
             metrics=metrics,
+            e2e_total_ms=self._extract_e2e_total_ms(result),
         )
 
     async def generate_videos(
@@ -510,6 +512,7 @@ class OmniOpenAIServingVideo:
             data=video_data,
             stage_durations=artifacts.stage_durations,
             peak_memory_mb=artifacts.peak_memory_mb,
+            e2e_total_ms=artifacts.e2e_total_ms,
         )
 
     async def generate_video_bytes(
@@ -520,7 +523,7 @@ class OmniOpenAIServingVideo:
         reference_image: ReferenceImage | None = None,
         reference_video: ReferenceVideo | None = None,
         reference_audio: ReferenceAudio | None = None,
-    ) -> tuple[bytes, dict[str, float], float, VideoAction | None, dict[str, object]]:
+    ) -> tuple[bytes, dict[str, float], float, VideoAction | None, dict[str, object], float | None]:
         """Generate a video and return raw MP4 bytes, bypassing base64 encoding."""
         artifacts = await self._run_and_extract(
             request,
@@ -546,7 +549,7 @@ class OmniOpenAIServingVideo:
         video_metadata = _video_metadata_from_artifacts(artifacts)
         if action is not None and isinstance(artifacts.videos[0], dict):
             logger.info("Action-only video request %s completed; skipping MP4 encoding.", reference_id)
-            return b"", artifacts.stage_durations, artifacts.peak_memory_mb, action, video_metadata
+            return b"", artifacts.stage_durations, artifacts.peak_memory_mb, action, video_metadata, artifacts.e2e_total_ms
 
         _t_encode_start = time.perf_counter()
         video_bytes = _encode_video_bytes(
@@ -558,7 +561,14 @@ class OmniOpenAIServingVideo:
         )
         _t_encode_ms = (time.perf_counter() - _t_encode_start) * 1000
         logger.info("Video response encoding (MP4 bytes): %.2f ms", _t_encode_ms)
-        return video_bytes, artifacts.stage_durations, artifacts.peak_memory_mb, artifacts.actions[0], video_metadata
+        return (
+            video_bytes,
+            artifacts.stage_durations,
+            artifacts.peak_memory_mb,
+            artifacts.actions[0],
+            video_metadata,
+            artifacts.e2e_total_ms,
+        )
 
     @staticmethod
     def _resolve_video_fps_multiplier(result: object) -> int:
@@ -1002,3 +1012,15 @@ class OmniOpenAIServingVideo:
             return float(peak_memory_mb or 0.0)
         except (TypeError, ValueError):
             return 0.0
+
+    @staticmethod
+    def _extract_e2e_total_ms(result: object) -> float | None:
+        metrics = getattr(result, "metrics", None)
+        if not isinstance(metrics, dict):
+            return None
+        value = metrics.get("e2e_total_ms")
+        try:
+            duration_ms = float(value)
+        except (TypeError, ValueError):
+            return None
+        return duration_ms if duration_ms >= 0 else None

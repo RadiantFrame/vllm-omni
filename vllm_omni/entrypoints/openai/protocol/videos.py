@@ -418,6 +418,10 @@ class VideoResponse(BaseModel):
         default=None,
         description="Optional profiler and stage metrics for benchmark clients.",
     )
+    e2e_total_ms: float | None = Field(
+        default=None,
+        description="vLLM-Omni orchestrator time from engine request start through final model output.",
+    )
     stage_durations: dict[str, float] = Field(
         default_factory=dict,
         description="Profiler stage durations reported by the diffusion pipeline.",
