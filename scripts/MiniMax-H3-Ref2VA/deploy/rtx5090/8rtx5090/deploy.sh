@@ -7,21 +7,23 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export VLLM_OMNI_VIDEO_SYNC_TIMEOUT=1800
 
+PORT=${PORT:-9000}
+NUM_WEIGHT_LOAD_THREADS=${NUM_WEIGHT_LOAD_THREADS:-8}
+MODEL=${MODEL:-/data/models/modelscope/MiniMax/MiniMax-H3/Ref2VA}
+# auto: partition inferred from MODEL path (FL2VA→fl2va, Ref2VA→ref2va, root→combined)
+TASK_TYPE=${TASK_TYPE:-auto}
+
 PROFILER_FLAGS=""
 if [ "${PROFILER:-0}" = "1" ]; then
     PROFILER_FLAGS="--enable-diffusion-pipeline-profiler"
 fi
 
-MODEL=${MODEL:-/data/models/modelscope/MiniMax/MiniMax-H3/Ref2VA}
-# auto: partition inferred from MODEL path (FL2VA→fl2va, Ref2VA→ref2va, root→combined)
-TASK_TYPE=${TASK_TYPE:-auto}
-# shellcheck disable=SC2086
 vllm serve  ${MODEL} \
   --omni \
   --task-type ${TASK_TYPE} \
   --trust-remote-code \
   --host 0.0.0.0 \
-  --port 9000 \
+  --port ${PORT} \
   --num-gpus 8 \
   --tensor-parallel-size 4 \
   --usp 2 \
@@ -31,7 +33,7 @@ vllm serve  ${MODEL} \
   --vae-parallel-mode tile \
   --vae-use-tiling \
   --enable-cpu-offload \
-  --num-weight-load-threads 16 \
+  --num-weight-load-threads ${NUM_WEIGHT_LOAD_THREADS} \
   --diffusion-compile-granularity regional \
   --diffusion-attention-backend SAGE_ATTN \
   --quantization fp8 \
