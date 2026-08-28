@@ -662,6 +662,13 @@ class OmniBase(PDDisaggregationMixin):
                 response_metrics["final_output_type"] = current_stage_metrics["final_output_type"]
                 response_metrics["num_tokens_in"] = current_stage_metrics["num_tokens_in"]
                 response_metrics["num_tokens_out"] = current_stage_metrics["num_tokens_out"]
+        if finished:
+            e2e_event = next(
+                (event for event in reversed(metrics.e2e_events) if event.request_id == rid_key),
+                None,
+            )
+            if e2e_event is not None:
+                response_metrics["e2e_total_ms"] = float(e2e_event.e2e_total_ms)
         # Generation content (outputs, prompt, images, trajectory_*, ...) is
         # copied from engine_outputs onto the returned object by
         # OmniRequestOutput.from_stage_output().

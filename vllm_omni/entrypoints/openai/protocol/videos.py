@@ -372,6 +372,10 @@ class VideoResponse(BaseModel):
         description="Filename of the saved output video files for this job.",
     )
     inference_time_s: float | None = Field(default=None, description="End-to-end inference time in seconds.")
+    e2e_total_ms: float | None = Field(
+        default=None,
+        description="vLLM-Omni orchestrator time from engine request start through final model output.",
+    )
     stage_durations: dict[str, float] = Field(
         default_factory=dict,
         description="Profiler stage durations reported by the diffusion pipeline.",

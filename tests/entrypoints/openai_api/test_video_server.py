@@ -52,6 +52,7 @@ class MockVideoResult:
         multimodal_output=None,
         stage_durations=None,
         peak_memory_mb=0.0,
+        metrics=None,
     ):
         self.multimodal_output = dict(multimodal_output or {"video": videos})
         if audios is not None:
@@ -60,6 +61,7 @@ class MockVideoResult:
             self.multimodal_output["audio_sample_rate"] = sample_rate
         self.stage_durations = stage_durations or {}
         self.peak_memory_mb = peak_memory_mb
+        self.metrics = metrics or {}
 
 
 class FakeAsyncOmni:
@@ -331,6 +333,24 @@ def test_async_video_generation_bypasses_base64(test_client, mocker: MockerFixtu
     # Wait for completion. If it used base64, the RuntimeError would fail the task
     _wait_for_status(test_client, video_id, VideoGenerationStatus.COMPLETED.value)
     mock_base64.assert_not_called()
+
+
+def test_async_video_generation_exposes_e2e_total_ms(test_client, mocker: MockerFixture):
+    _mock_encode_video_bytes(mocker)
+    engine = test_client.app.state.openai_serving_video._engine_client
+
+    async def _generate(prompt, request_id, sampling_params_list):
+        del prompt, request_id, sampling_params_list
+        yield MockVideoResult([object()], metrics={"e2e_total_ms": 26_432.7})
+
+    engine.generate = _generate
+
+    response = test_client.post("/v1/videos", data={"prompt": "Measure this video."})
+    assert response.status_code == 200
+    video_id = response.json()["id"]
+
+    completed = _wait_for_status(test_client, video_id, VideoGenerationStatus.COMPLETED.value)
+    assert completed["e2e_total_ms"] == pytest.approx(26_432.7)
 
 
 def test_async_video_generation_with_audio_bypasses_base64(test_client, mocker: MockerFixture):

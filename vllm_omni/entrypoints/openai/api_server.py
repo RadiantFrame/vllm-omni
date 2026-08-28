@@ -2966,7 +2966,13 @@ async def _run_video_generation_job(
     await VIDEO_STORE.update_fields(video_id, {"status": VideoGenerationStatus.IN_PROGRESS})
     started_at = time.perf_counter()
     try:
-        video_bytes, stage_durations, peak_memory_mb, action = await handler.generate_video_bytes(
+        (
+            video_bytes,
+            stage_durations,
+            peak_memory_mb,
+            action,
+            e2e_total_ms,
+        ) = await handler.generate_video_bytes(
             request,
             video_id,
             reference_image=reference_image,
@@ -2983,6 +2989,7 @@ async def _run_video_generation_job(
             "file_name": f"{video_id}.{job.file_extension}",
             "completed_at": save_context.created_at,
             "inference_time_s": time.perf_counter() - started_at,
+            "e2e_total_ms": e2e_total_ms,
             "stage_durations": stage_durations,
             "peak_memory_mb": peak_memory_mb,
             "action": action,
@@ -3536,7 +3543,7 @@ async def create_video_sync(
     raw_request.state.request_metadata = RequestResponseMetadata(request_id=request_id)
     started_at = time.perf_counter()
     try:
-        video_bytes, stage_durations, peak_memory_mb, _action = await asyncio.wait_for(
+        video_bytes, stage_durations, peak_memory_mb, _action, _e2e_total_ms = await asyncio.wait_for(
             handler.generate_video_bytes(
                 request,
                 request_id,
