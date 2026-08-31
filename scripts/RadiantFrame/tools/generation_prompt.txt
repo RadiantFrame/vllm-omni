@@ -1,0 +1,50 @@
+# MiniMax H3 Ref2VA — LE SSERAFIM MV Generation Prompt
+# 15 秒 全新原创 MV 序列（非原 MV 复刻）
+Generate a new 15-second cinematic K-pop girl-group music video featuring the five members of LE SSERAFIM: Sakura, Kim Chaewon, Huh Yunjin, Kazuha, and Hong Eunchae.
+IMPORTANT: Create a new original MV sequence. Do not reproduce or copy any existing LE SSERAFIM music video shot-for-shot.
+
+## REFERENCE ASSIGNMENT
+Image 1 is the identity reference for Sakura. Preserve her facial identity, facial structure, hairstyle, body proportions, and overall appearance.
+Image 2 is the identity reference for Kim Chaewon. Preserve her facial identity, facial structure, hairstyle, body proportions, and overall appearance.
+Image 3 is the identity reference for Huh Yunjin. Preserve her facial identity, facial structure, hairstyle, body proportions, and overall appearance.
+Image 4 is the identity reference for Kazuha. Preserve her facial identity, facial structure, hairstyle, body proportions, and overall appearance.
+Image 5 is the identity reference for Hong Eunchae. Preserve her facial identity, facial structure, hairstyle, body proportions, and overall appearance.
+Image 6 is the group reference. Use it to establish the five-member group composition, styling, wardrobe relationships, overall visual concept, and group chemistry.
+
+## VIDEO REFERENCES
+Video 1 is the choreography reference. Follow its synchronized choreography, body movement, timing, formations, and group dynamics.
+Video 2 is the performance reference. Follow its stage presence, facial expressions, gestures, member interactions, and performance energy.
+Video 3 is the cinematography reference. Follow its camera language, shot composition, camera movement, tracking, zooms, transitions, and cinematic rhythm.
+
+## AUDIO REFERENCES
+Audio 1 is the vocal reference. Use it to guide the vocal character, phrasing, emotional expression, and timing.
+Audio 2 is the music reference. Use its rhythm, tempo, musical atmosphere, instrumentation, and K-pop production characteristics.
+Audio 3 is the live-performance ambience reference. Use it for subtle crowd, stage, and concert-environment sound.
+
+## GENERATION
+Create an original high-budget LE SSERAFIM-style music-video sequence while preserving the identities of all five members.
+
+0-3 seconds:
+Start with a wide cinematic shot showing all five members entering the performance space and forming a synchronized formation. Establish the visual atmosphere and lighting.
+
+3-7 seconds:
+Transition into a dynamic group choreography sequence. Preserve the individual identity of all five members while maintaining accurate group formations and synchronized movement.
+
+7-11 seconds:
+Use the cinematography reference for dynamic camera movement. Alternate between group shots, medium shots, and close-ups of individual members, maintaining visual rhythm and member identity.
+
+11-15 seconds:
+Build toward a synchronized choreography climax and finish with a strong five-member hero composition. End on a powerful, visually striking final frame.
+
+## MAINTAIN
+strong identity consistency for all five members
+consistent hairstyles and facial appearance
+consistent wardrobe and styling
+temporal consistency
+group-member count consistency
+choreography consistency
+camera-motion consistency
+lighting and color consistency
+audio-video synchronization
+
+The final result should look like a newly produced, high-budget LE SSERAFIM music-video sequence rather than a reconstruction of an existing music video.
