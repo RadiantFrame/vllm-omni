@@ -109,8 +109,10 @@ HTTP_PID_FILE="/tmp/compare_videos_http.pid"
 if [[ -f "$HTTP_PID_FILE" ]] && kill -0 "$(cat "$HTTP_PID_FILE")" 2>/dev/null; then
     kill "$(cat "$HTTP_PID_FILE")" 2>/dev/null
 fi
-# 以文件系统根为伺服目录，这样绝对路径可直接映射成 URL 路径
-python3 -m http.server "$HTTP_PORT" --bind 127.0.0.1 -d / >/dev/null 2>&1 &
+# 以文件系统根为伺服目录，这样绝对路径可直接映射成 URL 路径。
+# 必须用支持 Range(206) 的服务：python -m http.server 忽略 Range 头，
+# Chrome 对无 Range 的源会禁用 seek —— 逐帧/拖动直接失效归零。
+python3 "${SCRIPT_DIR}/ranged_server.py" "$HTTP_PORT" / >/dev/null 2>&1 &
 HTTP_PID=$!
 echo "$HTTP_PID" > "$HTTP_PID_FILE"
 sleep 0.5
