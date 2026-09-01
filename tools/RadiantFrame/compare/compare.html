@@ -118,6 +118,13 @@
     display: block;
     background: #000;
   }
+  /* 竖屏等窄幅视频：画面贴向中轴线（A 靠右 / B 靠左），黑边甩到外侧 */
+  .side-by-side .video-wrapper:first-child video {
+    object-position: right center;
+  }
+  .side-by-side .video-wrapper:last-child video {
+    object-position: left center;
+  }
   .video-tag {
     position: absolute;
     top: 8px;
