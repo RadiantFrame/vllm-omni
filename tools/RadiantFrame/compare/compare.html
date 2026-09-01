@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>双视频对比播放器</title>
+<link rel="icon" href="data:,">
+
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -495,7 +497,9 @@
       video.removeEventListener('loadedmetadata', onMeta);
       if (isA) loadedA = true; else loadedB = true;
       if (loadedA && loadedB) {
-        duration = Math.min(videoA.duration, videoB.duration);
+        const _da = videoA.duration, _db = videoB.duration;
+        duration = (isFinite(_da) && isFinite(_db)) ? Math.min(_da, _db)
+                 : (isFinite(_da) ? _da : (isFinite(_db) ? _db : 0));
         enableControls();
         updateTimeDisplay();
       }
@@ -533,7 +537,9 @@
         if (input === fileA) loadedA = true;
         else loadedB = true;
         if (loadedA && loadedB) {
-          duration = Math.min(videoA.duration, videoB.duration);
+          const _da = videoA.duration, _db = videoB.duration;
+        duration = (isFinite(_da) && isFinite(_db)) ? Math.min(_da, _db)
+                 : (isFinite(_da) ? _da : (isFinite(_db) ? _db : 0));
           enableControls();
           updateTimeDisplay();
         }
@@ -651,10 +657,32 @@
   function seekFromEvent(e) {
     const rect = progressBar.getBoundingClientRect();
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const time = pct * duration;
+    seekTo(pct * effectiveDuration());
+  }
+
+  // 计算有效时长：优先用加载时缓存的 duration；若其为 NaN/0（某侧
+  // loadedmetadata 时另一侧 duration 尚不可用会被 Math.min 污染成 NaN），
+  // 回退到当前两个活动视频自身的 duration。
+  function effectiveDuration() {
+    if (isFinite(duration) && duration > 0) return duration;
+    const vids = getVideos();
+    let d = Infinity;
+    vids.forEach(function(v) {
+      if (isFinite(v.duration) && v.duration > 0) d = Math.min(d, v.duration);
+    });
+    return isFinite(d) ? d : 0;
+  }
+
+  // 统一的 seek 入口：NaN 防护（currentTime=NaN 会被浏览器重置到 0，
+  // 表现为“一按就退回开头”）
+  function seekTo(newTime) {
+    const dur = effectiveDuration();
+    if (!isFinite(newTime)) newTime = 0;
+    newTime = Math.max(0, Math.min(dur, newTime));
     const videos = getVideos();
-    videos.forEach(function(v) { v.currentTime = time; });
-    updateProgress(time);
+    videos.forEach(function(v) { v.currentTime = newTime; });
+    updateProgress(newTime);
+    return newTime;
   }
 
   // 逐帧
@@ -662,17 +690,13 @@
     const videos = getVideos();
     const fps = 30; // 假设30fps
     const step = 1 / fps;
-    const newTime = Math.max(0, Math.min(duration, videos[0].currentTime + dir * step));
-    videos.forEach(function(v) { v.currentTime = newTime; });
-    updateProgress(newTime);
+    return seekTo(videos[0].currentTime + dir * step);
   };
 
   // 快进快退
   window.seekBy = function(sec) {
     const videos = getVideos();
-    const newTime = Math.max(0, Math.min(duration, videos[0].currentTime + sec));
-    videos.forEach(function(v) { v.currentTime = newTime; });
-    updateProgress(newTime);
+    return seekTo(videos[0].currentTime + sec);
   };
 
   // 速度
