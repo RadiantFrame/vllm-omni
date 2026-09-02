@@ -18,7 +18,9 @@ export VLLM_OMNI_VIDEO_SYNC_TIMEOUT=1800
 
 PORT=${PORT:-9000}
 NUM_WEIGHT_LOAD_THREADS=${NUM_WEIGHT_LOAD_THREADS:-8}
-
+MODEL=${MODEL:-/data/models/modelscope/MiniMax/MiniMax-H3/FL2VA}
+# auto: partition inferred from MODEL path (FL2VA→fl2va, Ref2VA→ref2va, root→combined)
+TASK_TYPE=${TASK_TYPE:-auto}
 PROFILER_FLAGS=""
 if [ "${PROFILER:-0}" = "1" ]; then
     PROFILER_FLAGS="--enable-diffusion-pipeline-profiler"
@@ -27,23 +29,24 @@ fi
 echo "Starting MiniMax-H3 FL2VA Tier 4 / 4b (Candidate A + Cache-DiT high) on port $PORT ..."
 
 # shellcheck disable=SC2086
-vllm serve /data/models/modelscope/MiniMax/MiniMax-H3/FL2VA \
+vllm serve ${MODEL} \
+  --omni \
+  --task-type ${TASK_TYPE} \
   --trust-remote-code \
   --host 0.0.0.0 \
   --port "$PORT" \
   --num-gpus 4 \
-  --num-weight-load-threads "$NUM_WEIGHT_LOAD_THREADS" \
   --usp 4 \
   --ring 1 \
   --text-encoder-tp-size 4 \
+  --vae-patch-parallel-size 4 \
+  --vae-parallel-mode tile \
+  --vae-use-tiling \
+  --num-weight-load-threads "$NUM_WEIGHT_LOAD_THREADS" \
+  --diffusion-compile-granularity regional \
+  --diffusion-attention-backend FLASH_ATTN \
   --quantization fp8 \
   --cache-backend cache_dit \
   --cache-config '{"Fn_compute_blocks":1,"Bn_compute_blocks":0,"max_warmup_steps":4,"residual_diff_threshold":0.04,"max_continuous_cached_steps":1,"enable_taylorseer":false}' \
   --enable-cache-dit-summary \
-  --diffusion-compile-granularity regional \
-  --vae-patch-parallel-size 4 \
-  --vae-parallel-mode tile \
-  --vae-use-tiling \
-  --diffusion-attention-backend FLASH_ATTN \
-  $PROFILER_FLAGS \
-  --omni
+  $PROFILER_FLAGS
