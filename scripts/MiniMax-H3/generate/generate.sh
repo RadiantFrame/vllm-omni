@@ -49,8 +49,6 @@ DURATION="${DURATION:-5}"
 TASK_TYPE="${TASK_TYPE:-fl2va}"
 WIDTH="${WIDTH:-832}"
 HEIGHT="${HEIGHT:-480}"
-# Optional explicit frame-index mapping (see the FRAMES comment above).
-FRAME_INDICES="${FRAME_INDICES:-}"
 
 mkdir -p "$OUT_DIR"
 
@@ -71,10 +69,6 @@ PROMPT="$(cat "$PROMPT_FILE")"
 #   FRAMES="" bash generate.sh                        # 0 frames (text-only)
 #   FRAMES="first.png" bash generate.sh               # first frame only
 #   FRAMES="first.png last.png" bash generate.sh      # first + last frame
-# FRAME_INDICES optionally overrides the mapping via extra_params (one of
-# [0], [-1], [0,-1]; must match the image count): e.g. a single image used
-# as the LAST frame:
-#   FRAMES="last.png" FRAME_INDICES="-1" bash generate.sh
 FRAME_FILES=()
 for src in ${FRAMES:-}; do
     [ -f "$src" ] || { echo "ERROR: reference frame not found: $src" >&2; exit 1; }
@@ -89,17 +83,6 @@ case "${#FRAME_FILES[@]}" in
     1) frames_desc="first frame only" ;;
     2) frames_desc="first + last frame" ;;
 esac
-
-# Optional explicit frame_indices (server default: [0] for 1 image, [0,-1]
-# for 2). Validated server-side against the image count.
-EXTRA_FRAME_INDICES=""
-if [ -n "$FRAME_INDICES" ]; then
-    if [ "${#FRAME_FILES[@]}" -eq 0 ]; then
-        echo "ERROR: FRAME_INDICES requires at least one frame in FRAMES" >&2
-        exit 1
-    fi
-    EXTRA_FRAME_INDICES=',"frame_indices":['"$FRAME_INDICES"']'
-fi
 
 echo "Posting ${WIDTH}x${HEIGHT}/${DURATION}s ${TASK_TYPE} request (${frames_desc}) to ${#PORTS[@]} service(s): ${PORTS[*]}, ${ROUNDS} round(s) (concurrent fan-out per round)..."
 echo ""
@@ -131,7 +114,7 @@ for ((r = 1; r <= ROUNDS; r++)); do
             -F "seed=${SEED}" \
             -F "width=${WIDTH}" \
             -F "height=${HEIGHT}" \
-            -F 'extra_params={"task":"'"${TASK_TYPE}"'","duration":'"${DURATION}"',"audio_flow_shift":3.0'"${EXTRA_FRAME_INDICES}"'}' \
+            -F 'extra_params={"task":"'"${TASK_TYPE}"'","duration":'"${DURATION}"',"audio_flow_shift":3.0}' \
             "${FRAME_FLAGS[@]}" \
             -o "$out" \
             -w '%{http_code}' > "$stat" ) &

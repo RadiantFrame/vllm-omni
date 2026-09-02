@@ -10,8 +10,6 @@ set -euo pipefail
 #   bash run.sh                                    # 480p/5s defaults below
 #   WIDTH=1344 HEIGHT=768 DURATION=15 bash run.sh  # the 768p benchmark shape
 #   INPUT_DIR=inputs/i2va bash run.sh              # another case directory
-#   FRAMES="" bash run.sh                          # text-only (0 frames)
-#   FRAMES="first.png last.png" bash run.sh        # first + last frame
 
 # --- Request shape ---------------------------------------------------------
 export TASK_TYPE="${TASK_TYPE:-fl2va}"
@@ -20,16 +18,14 @@ export HEIGHT="${HEIGHT:-480}"
 export DURATION="${DURATION:-5}"         # seconds
 
 # --- Required inputs (defaults use inputs/i2va/ at the repo root) ----------
-# Each case is one directory holding prompt.txt plus 0-2 reference frame
-# images (FL2VA's input, unlike Ref2VA's REFS list: 0 = text-only, 1 = first
-# frame, 2 = first + last frame). All must be local files — no URL download.
-# PROMPT_FILE: local txt file, newlines preserved.
-# FRAMES: the reference frame images, in upload order (first, then last);
-# defaults to INPUT_DIR images (files other than prompt.txt/README) in
-# sorted filename order — an empty result means text-only.
+# The ONLY input knob is INPUT_DIR: each case is one directory holding
+# prompt.txt plus 0-2 reference frame images (FL2VA's input, unlike Ref2VA's
+# REFS list: 0 = text-only, 1 = first frame, 2 = first + last frame). All
+# inputs are read from it — local files only, no URL download, and no
+# PROMPT_FILE/FRAMES env overrides. Sorted filename order = upload order.
 INPUT_DIR="${INPUT_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)/inputs/i2va}"
-export PROMPT_FILE="${PROMPT_FILE:-${INPUT_DIR}/prompt.txt}"
-export FRAMES="${FRAMES:-$(find "${INPUT_DIR}" -maxdepth 1 -type f ! -name 'prompt.txt' ! -name 'README*' | sort)}"
+export PROMPT_FILE="${INPUT_DIR}/prompt.txt"
+export FRAMES="$(find "${INPUT_DIR}" -maxdepth 1 -type f ! -name 'prompt.txt' ! -name 'README*' | sort)"
 
 # Echo the resolved inputs so a wrong case directory is immediately visible.
 echo "[run.sh] prompt:  ${PROMPT_FILE}"
