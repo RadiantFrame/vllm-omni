@@ -21,7 +21,6 @@ NUM_WEIGHT_LOAD_THREADS=${NUM_WEIGHT_LOAD_THREADS:-8}
 MODEL=${MODEL:-/data/models/modelscope/MiniMax/MiniMax-H3/Ref2VA}
 # auto: partition inferred from MODEL path (FL2VA→fl2va, Ref2VA→ref2va, root→combined)
 TASK_TYPE=${TASK_TYPE:-auto}
-
 PROFILER_FLAGS=""
 if [ "${PROFILER:-0}" = "1" ]; then
     PROFILER_FLAGS="--enable-diffusion-pipeline-profiler"
