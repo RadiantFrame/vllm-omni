@@ -14,7 +14,10 @@ Two ways to use:
 2. As a CLI (parity with deploy.sh):
      python deploy.py                 # foreground, Ctrl-C stops the service
      python deploy.py --detach        # background + log + wait healthy, then exit
-                                      # (service keeps running; stop via --stop-pid file)
+                                      # (service keeps running; pid recorded in the
+                                      # pid file, default logs/deploy_py.pid)
+     python deploy.py --stop          # stop the --detach service via the pid file
+     python deploy.py --stop-pid N    # stop an arbitrary pid the same way
 
 Config knobs (env names = field names uppercased; defaults mirror 4rtx5090/deploy.sh):
   MODEL                      model path
@@ -33,7 +36,7 @@ Config knobs (env names = field names uppercased; defaults mirror 4rtx5090/deplo
   LOG / HEALTH_TIMEOUT_MIN   deployer-side knobs
 
 Every deploy also exports: VLLM_WORKER_MULTIPROC_METHOD=spawn,
-VLLM_OMNI_VIDEO_SYNC_TIMEOUT=1800, PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+VLLM_OMNI_VIDEO_SYNC_TIMEOUT=4500, PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 (anti-fragmentation; 768p OOMed without it).
 """
 
@@ -41,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import os
 import shlex
 import signal
@@ -81,6 +85,7 @@ class DeployConfig:
     enable_cpu_offload: bool = True
     residual_diff_threshold: float = 0.04   # official default; change only explicitly
     log_path: str = "logs/deploy_py.log"
+    pid_file: str = "logs/deploy_py.pid"   # written on --detach, read by --stop
     health_timeout_min: int = 15
 
     @classmethod
@@ -104,16 +109,20 @@ class DeployConfig:
             enable_cpu_offload=env("ENABLE_CPU_OFFLOAD", "1") == "1",
             residual_diff_threshold=env("RESIDUAL_DIFF_THRESHOLD", 0.04, float),
             log_path=env("LOG", "logs/deploy_py.log"),
+            pid_file=env("PID_FILE", "logs/deploy_py.pid"),
             health_timeout_min=env("HEALTH_TIMEOUT_MIN", 15, int),
         )
 
     def build_cmd(self) -> list[str]:
         """config -> vllm serve CLI (single source of truth for the mapping)."""
-        cache_config = (
-            '{"Fn_compute_blocks":1,"Bn_compute_blocks":0,"max_warmup_steps":4,'
-            f'"residual_diff_threshold":{self.residual_diff_threshold},'
-            '"max_continuous_cached_steps":1,"enable_taylorseer":false}'
-        )
+        cache_config = json.dumps({
+            "Fn_compute_blocks": 1,
+            "Bn_compute_blocks": 0,
+            "max_warmup_steps": 4,
+            "residual_diff_threshold": self.residual_diff_threshold,
+            "max_continuous_cached_steps": 1,
+            "enable_taylorseer": False,
+        })
         num_gpus = len(self.cuda_visible_devices.split(","))
         cmd = [
             "vllm", "serve", self.model,
@@ -146,7 +155,7 @@ class DeployConfig:
         env = dict(os.environ)
         env["CUDA_VISIBLE_DEVICES"] = self.cuda_visible_devices
         env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-        env["VLLM_OMNI_VIDEO_SYNC_TIMEOUT"] = "1800"
+        env["VLLM_OMNI_VIDEO_SYNC_TIMEOUT"] = "4500"
         env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
         return env
 
@@ -198,33 +207,46 @@ def _workers_left() -> list[str]:
     try:
         out = subprocess.run(
             ["pgrep", "-af", "DiffusionWorker"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, 
+            text=True, 
+            timeout=10,
         ).stdout.strip()
         return [line for line in out.splitlines() if line]
     except Exception:
         return []
 
 
-def graceful_stop(proc: subprocess.Popen, wait_sec: int = 120) -> bool:
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)  # signal 0 = existence probe only
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by someone else
+
+
+def graceful_stop_pid(pid: int, wait_sec: int = 120) -> bool:
     """TERM -> wait -> KILL as last resort -> verify no worker remnants.
+
+    Works for any pid (not just our own Popen child), so a --stop invocation
+    can reuse the exact same sequence as the in-process graceful_stop().
 
     Hard-killing a rank mid-collective orphans NCCL spin kernels that peg the
     GPUs at 100% until a driver reset; never skip the graceful path.
     """
-    if proc.poll() is not None:
-        pass  # already exited; still check for orphaned workers below
-    else:
-        proc.terminate()
-        try:
-            proc.wait(timeout=wait_sec)
-        except subprocess.TimeoutExpired:
-            print("[deploy] WARNING: still alive after "
+    if _pid_alive(pid):
+        os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + wait_sec
+        while _pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(1)
+        if _pid_alive(pid):
+            print(f"[deploy] WARNING: pid {pid} still alive after "
                   f"{wait_sec}s, sending KILL", file=sys.stderr)
-            proc.kill()
-            try:
-                proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                pass
+            os.kill(pid, signal.SIGKILL)
+            deadline = time.monotonic() + 30
+            while _pid_alive(pid) and time.monotonic() < deadline:
+                time.sleep(1)
     leftovers = _workers_left()
     if leftovers:
         print(f"[deploy] WARNING: orphaned workers: {leftovers}", file=sys.stderr)
@@ -233,15 +255,40 @@ def graceful_stop(proc: subprocess.Popen, wait_sec: int = 120) -> bool:
     return True
 
 
+def graceful_stop(proc: subprocess.Popen, wait_sec: int = 120) -> bool:
+    """graceful_stop_pid for a Popen we own (module-use path)."""
+    return graceful_stop_pid(proc.pid, wait_sec=wait_sec)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--detach", action="store_true",
-                    help="background + wait healthy, then exit (service keeps running)")
+                    help="background + wait healthy, then exit (service keeps running; "
+                         "pid recorded in the pid file for --stop)")
+    parser.add_argument("--stop", action="store_true",
+                    help="gracefully stop the service started by --detach "
+                         "(reads the pid from the pid file, then TERM -> wait -> KILL "
+                         "-> verify no worker remnants)")
+    parser.add_argument("--stop-pid", type=int, default=None, metavar="PID",
+                    help="stop this pid instead of the one in the pid file")
     parser.add_argument("--dry-run", action="store_true",
                     help="print the vllm command and exit")
     args = parser.parse_args()
 
     cfg = DeployConfig.from_env()
+
+    if args.stop or args.stop_pid is not None:
+        pid = args.stop_pid
+        if pid is None:
+            try:
+                with open(cfg.pid_file) as fh:
+                    pid = int(fh.read().strip())
+            except (OSError, ValueError):
+                print(f"[deploy] FATAL: cannot read pid from {cfg.pid_file}; "
+                      f"use --stop-pid <PID> explicitly", file=sys.stderr)
+                return 1
+        print(f"[deploy] stopping pid {pid} ...")
+        return 0 if graceful_stop_pid(pid) else 1
     if args.dry_run:
         print(" ".join(shlex.quote(c) for c in cfg.build_cmd()))
         return 0
@@ -251,7 +298,10 @@ def main() -> int:
         if not wait_healthy(proc, cfg.port, cfg.health_timeout_min):
             graceful_stop(proc)
             return 1
-        print(f"[deploy] detached; pid={proc.pid} log={log_path} port={cfg.port}")
+        with open(cfg.pid_file, "w") as fh:
+            fh.write(f"{proc.pid}\n")
+        print(f"[deploy] detached; pid={proc.pid} log={log_path} "
+              f"port={cfg.port} pid_file={cfg.pid_file}")
         return 0
 
     # Foreground mode: forward Ctrl-C/SIGTERM to the service, wait for exit.
