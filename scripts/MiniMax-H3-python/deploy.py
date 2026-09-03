@@ -4,12 +4,13 @@
 Two ways to use:
 
 1. As a module (for pipeline.py / search.py):
-     from deploy import DeployConfig, serve, wait_healthy, graceful_stop
-     cfg = DeployConfig.from_env()          # or construct explicitly / override
-     proc, log_path = serve(cfg)            # background, log to file
-     ok = wait_healthy(proc, cfg.port)      # poll /health, abort if launcher dies
-     ...
-     graceful_stop(proc)                    # TERM -> wait -> KILL -> verify clean
+     from deploy import DeployConfig, Deployer
+     with Deployer(DeployConfig.from_env()) as d:   # serve + wait healthy
+         gen = Generator.from_deployer(d)           # generate.py pairs with this
+         gen.run()
+     ...                                            # d stopped cleanly on exit
+   Module level additionally exports graceful_stop_pid(pid) for stopping a
+   service that is not owned by any Deployer here (e.g. a --detach leftover).
 
 2. As a CLI (parity with deploy.sh):
      python deploy.py                 # foreground, Ctrl-C stops the service
@@ -160,49 +161,6 @@ class DeployConfig:
         return env
 
 
-def serve(cfg: DeployConfig):
-    """Start vllm serve in the background; returns (Popen, log_path).
-
-    start_new_session=True detaches the child from this terminal's SIGHUP
-    (SSH drop won't kill the service); stopping it must go through
-    graceful_stop()/terminate().
-    """
-    os.makedirs(os.path.dirname(cfg.log_path) or ".", exist_ok=True)
-    cmd = cfg.build_cmd()
-    print(f"[deploy] {' '.join(shlex.quote(c) for c in cmd)}")
-    print(f"[deploy] log: {cfg.log_path}")
-    log_fh = open(cfg.log_path, "w", buffering=1)
-    proc = subprocess.Popen(
-        cmd,
-        stdout=log_fh,
-        stderr=subprocess.STDOUT,
-        env=cfg.build_env(),
-        start_new_session=True,
-    )
-    return proc, cfg.log_path
-
-
-def wait_healthy(proc: subprocess.Popen, port: int, timeout_min: int = 15) -> bool:
-    """Poll /health until ready. Returns False (and prints log tail) if the
-    launcher dies or the timeout elapses."""
-    deadline = time.monotonic() + timeout_min * 60
-    url = f"http://localhost:{port}/health"
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            print(f"[deploy] FATAL: launcher exited rc={proc.returncode}", file=sys.stderr)
-            return False
-        try:
-            with urllib.request.urlopen(url, timeout=3) as resp:
-                if resp.status == 200:
-                    print(f"[deploy] healthy: {url}")
-                    return True
-        except Exception:
-            pass
-        time.sleep(5)
-    print(f"[deploy] FATAL: health check timed out after {timeout_min}min", file=sys.stderr)
-    return False
-
-
 def _workers_left() -> list[str]:
     try:
         out = subprocess.run(
@@ -229,8 +187,8 @@ def _pid_alive(pid: int) -> bool:
 def graceful_stop_pid(pid: int, wait_sec: int = 120) -> bool:
     """TERM -> wait -> KILL as last resort -> verify no worker remnants.
 
-    Works for any pid (not just our own Popen child), so a --stop invocation
-    can reuse the exact same sequence as the in-process graceful_stop().
+    Works for any pid (not just a Deployer-owned child), so a --stop
+    invocation can stop a service started by an earlier --detach.
 
     Hard-killing a rank mid-collective orphans NCCL spin kernels that peg the
     GPUs at 100% until a driver reset; never skip the graceful path.
@@ -255,9 +213,114 @@ def graceful_stop_pid(pid: int, wait_sec: int = 120) -> bool:
     return True
 
 
-def graceful_stop(proc: subprocess.Popen, wait_sec: int = 120) -> bool:
-    """graceful_stop_pid for a Popen we own (module-use path)."""
-    return graceful_stop_pid(proc.pid, wait_sec=wait_sec)
+class Deployer:
+    """Owns one service lifecycle: serve -> healthy -> (traffic) -> stop.
+
+    Usable as a context manager; pairs with generate.py's Generator via
+    `Generator.from_deployer(deployer)`, which reads `deployer.port` to
+    target the traffic.
+
+        with Deployer(cfg) as d:          # serve() + wait_healthy()
+            gen = Generator.from_deployer(d)
+            gen.run()
+        # __exit__ stops the service gracefully even on exceptions
+    """
+
+    def __init__(self, cfg: DeployConfig):
+        self.cfg = cfg
+        self.proc: subprocess.Popen | None = None
+
+    # -- lifecycle ------------------------------------------------------------
+
+    def start(self) -> "Deployer":
+        """Launch the service and wait until /health is ready."""
+        self.serve()
+        if not self.wait_healthy():
+            self.stop()
+            raise RuntimeError(
+                f"service on port {self.cfg.port} failed to become healthy "
+                f"(see {self.cfg.log_path})")
+        return self
+
+    def serve(self) -> subprocess.Popen:
+        """Launch the background service (no health wait).
+
+        start_new_session=True detaches the child from this terminal's
+        SIGHUP (SSH drop won't kill the service); stopping it must go
+        through stop()/terminate().
+        """
+        if self.proc is not None and self.proc.poll() is None:
+            raise RuntimeError(f"already serving pid={self.proc.pid}")
+        os.makedirs(os.path.dirname(self.cfg.log_path) or ".", exist_ok=True)
+        cmd = self.cfg.build_cmd()
+        print(f"[deploy] {' '.join(shlex.quote(c) for c in cmd)}")
+        print(f"[deploy] log: {self.cfg.log_path}")
+        log_fh = open(self.cfg.log_path, "w", buffering=1)
+        self.proc = subprocess.Popen(
+            cmd,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            env=self.cfg.build_env(),
+            start_new_session=True,
+        )
+        return self.proc
+
+    def wait_healthy(self, timeout_min: int | None = None) -> bool:
+        """Poll /health until ready. Returns False (and prints FATAL) if the
+        launcher dies or the timeout elapses."""
+        if self.proc is None:
+            raise RuntimeError("not serving; call serve()/start() first")
+        port = self.cfg.port
+        timeout_min = timeout_min or self.cfg.health_timeout_min
+        deadline = time.monotonic() + timeout_min * 60
+        url = f"http://localhost:{port}/health"
+        while time.monotonic() < deadline:
+            if self.proc.poll() is not None:
+                print(f"[deploy] FATAL: launcher exited rc={self.proc.returncode}",
+                      file=sys.stderr)
+                return False
+            try:
+                with urllib.request.urlopen(url, timeout=3) as resp:
+                    if resp.status == 200:
+                        print(f"[deploy] healthy: {url}")
+                        return True
+            except Exception:
+                pass
+            time.sleep(5)
+        print(f"[deploy] FATAL: health check timed out after {timeout_min}min",
+              file=sys.stderr)
+        return False
+
+    def stop(self, wait_sec: int = 120) -> bool:
+        """Graceful stop (TERM -> wait -> KILL -> verify no worker remnants)."""
+        if self.proc is None:
+            return True  # nothing we started; nothing to stop
+        ok = graceful_stop_pid(self.proc.pid, wait_sec=wait_sec)
+        self.proc = None
+        return ok
+
+    # -- service facts (for the generation side) ------------------------------
+
+    @property
+    def port(self) -> int:
+        return self.cfg.port
+
+    @property
+    def pid(self) -> int | None:
+        return self.proc.pid if self.proc is not None else None
+
+    @property
+    def log_path(self) -> str:
+        return self.cfg.log_path
+
+    # -- context manager -------------------------------------------------------
+
+    def __enter__(self) -> "Deployer":
+        return self.start()
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.stop()
+        return False  # never swallow exceptions
 
 
 def main() -> int:
@@ -293,14 +356,15 @@ def main() -> int:
         print(" ".join(shlex.quote(c) for c in cfg.build_cmd()))
         return 0
 
-    proc, log_path = serve(cfg)
+    deployer = Deployer(cfg)
+    proc = deployer.serve()
     if args.detach:
-        if not wait_healthy(proc, cfg.port, cfg.health_timeout_min):
-            graceful_stop(proc)
+        if not deployer.wait_healthy():
+            deployer.stop()
             return 1
         with open(cfg.pid_file, "w") as fh:
-            fh.write(f"{proc.pid}\n")
-        print(f"[deploy] detached; pid={proc.pid} log={log_path} "
+            fh.write(f"{deployer.pid}\n")
+        print(f"[deploy] detached; pid={deployer.pid} log={deployer.log_path} "
               f"port={cfg.port} pid_file={cfg.pid_file}")
         return 0
 
@@ -313,7 +377,7 @@ def main() -> int:
         return rc
     except KeyboardInterrupt:
         print("\n[deploy] interrupt -> graceful stop")
-        graceful_stop(proc)
+        deployer.stop()
         return 130
 
 
