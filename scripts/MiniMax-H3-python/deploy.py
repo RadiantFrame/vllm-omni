@@ -16,7 +16,7 @@ Two ways to use:
      python deploy.py                 # foreground, Ctrl-C stops the service
      python deploy.py --detach        # background + log + wait healthy, then exit
                                       # (service keeps running; pid recorded in the
-                                      # pid file, default logs/deploy_py.pid)
+                                      # pid file, default logs/deploy.pid)
      python deploy.py --stop          # stop the --detach service via the pid file
      python deploy.py --stop-pid N    # stop an arbitrary pid the same way
 
@@ -85,8 +85,8 @@ class DeployConfig:
     quantization: str = "fp8"           # "" disables the flag
     enable_cpu_offload: bool = True
     residual_diff_threshold: float = 0.04   # official default; change only explicitly
-    log_path: str = "logs/deploy_py.log"
-    pid_file: str = "logs/deploy_py.pid"   # written on --detach, read by --stop
+    log_path: str = "logs/deploy.log"
+    pid_file: str = "logs/deploy.pid"   # written on --detach, read by --stop
     health_timeout_min: int = 15
 
     @classmethod
@@ -109,8 +109,8 @@ class DeployConfig:
             quantization=env("QUANTIZATION", "fp8"),
             enable_cpu_offload=env("ENABLE_CPU_OFFLOAD", "1") == "1",
             residual_diff_threshold=env("RESIDUAL_DIFF_THRESHOLD", 0.04, float),
-            log_path=env("LOG", "logs/deploy_py.log"),
-            pid_file=env("PID_FILE", "logs/deploy_py.pid"),
+            log_path=env("LOG", "logs/deploy.log"),
+            pid_file=env("PID_FILE", "logs/deploy.pid"),
             health_timeout_min=env("HEALTH_TIMEOUT_MIN", 15, int),
         )
 
