@@ -31,8 +31,9 @@ Config knobs (env names = field names uppercased; defaults mirror 4rtx5090/deplo
   QUANTIZATION               "fp8" or "" to disable          (fp8)
   ENABLE_CPU_OFFLOAD         1/0                             (1)
   DIFFUSION_ATTENTION_BACKEND                                 (CUDNN_ATTN)
-  RESIDUAL_DIFF_THRESHOLD    Cache-DiT threshold             (0.04 — official
-                             default; per project policy only change explicitly)
+  CACHE_CONFIG    JSON of cache-dit overrides merged over the defaults
+                  (keys mirror vllm-omni's DiffusionCacheConfig), e.g.
+                  '{"enable_taylorseer": true, "taylorseer_order": 2}'
   NUM_WEIGHT_LOAD_THREADS    (8)
   LOG / HEALTH_TIMEOUT_MIN   deployer-side knobs
 
@@ -58,6 +59,38 @@ from dataclasses import dataclass, field
 
 MODEL_DEFAULT = "/data/models/modelscope/MiniMax/MiniMax-H3/FL2VA"
 
+# Cache-DiT keys accepted in cache_config: the official vllm-omni
+# DiffusionCacheConfig set (the server's from_dict silently files unknown
+# keys under _extra_params, so a typo would silently no-op — validate here).
+_CACHE_CONFIG_KEYS = frozenset({
+    "cache_type",
+    "Fn_compute_blocks", "Bn_compute_blocks",
+    "residual_diff_threshold", "max_accumulated_residual_diff_threshold",
+    "max_warmup_steps", "warmup_interval",
+    "max_cached_steps", "max_continuous_cached_steps",
+    "enable_separate_cfg", "cfg_compute_first", "cfg_diff_compute_separate",
+    "num_inference_steps",
+    "steps_computation_mask", "steps_computation_policy",
+    "force_refresh_step_hint", "force_refresh_step_policy",
+    "enable_taylorseer", "taylorseer_order",
+    "scm_steps_mask_policy", "scm_steps_policy",
+})
+DEFAULT_CACHE_CONFIG: dict = {   # values = the historical H3 deployment
+    "Fn_compute_blocks": 1,
+    "Bn_compute_blocks": 0,
+    "max_warmup_steps": 4,
+    "max_cached_steps": -1,
+    "max_continuous_cached_steps": 1,
+    "residual_diff_threshold": 0.04,   # official default; change only explicitly
+    "enable_taylorseer": False,
+    "taylorseer_order": 1,
+    "scm_steps_mask_policy": None,
+    "scm_steps_policy": "dynamic",
+    "num_inference_steps": None,
+    "force_refresh_step_hint": None,
+    "force_refresh_step_policy": "once",
+}
+
 
 @dataclass
 class DeployConfig:
@@ -68,7 +101,8 @@ class DeployConfig:
       model                    positional arg of `vllm serve`
       cuda_visible_devices     the CUDA_VISIBLE_DEVICES env var;
                                --num-gpus is derived as len(devices)
-      residual_diff_threshold  lives inside --cache-config JSON
+      cache_config             the whole --cache-config JSON as a dict
+                               (keys mirror vllm-omni's DiffusionCacheConfig)
       log_path / health_timeout_min  deployer-side, not passed to vllm
     """
 
@@ -84,16 +118,41 @@ class DeployConfig:
     diffusion_attention_backend: str = "CUDNN_ATTN"
     quantization: str = "fp8"           # "" disables the flag
     enable_cpu_offload: bool = True
-    residual_diff_threshold: float = 0.04   # official default; change only explicitly
+    # Cache-DiT knobs as ONE dict (passed through to --cache-config). Keys
+    # mirror vllm-omni's DiffusionCacheConfig so run snapshots stay directly
+    # comparable with the official definitions. Constructed/swept as a dict:
+    #   DeployConfig(cache_config={"enable_taylorseer": True, ...})
+    # Partial dicts are fine — unknown keys fall back to engine defaults.
+    cache_config: dict = field(default_factory=lambda: dict(DEFAULT_CACHE_CONFIG))
     log_path: str = "logs/deploy.log"
     pid_file: str = "logs/deploy.pid"   # written on --detach, read by --stop
     health_timeout_min: int = 15
+
+    def __post_init__(self) -> None:
+        unknown = set(self.cache_config) - _CACHE_CONFIG_KEYS
+        if unknown:
+            raise ValueError(
+                f"cache_config has unknown key(s) {sorted(unknown)}; valid "
+                f"keys are the official DiffusionCacheConfig names: "
+                f"{sorted(_CACHE_CONFIG_KEYS)}")
 
     @classmethod
     def from_env(cls) -> "DeployConfig":
         def env(name: str, default: Any, cast: Callable[[str], Any] = str) -> Any:
             raw = os.environ.get(name, "")
             return cast(raw) if raw else default
+
+        # CACHE_CONFIG: JSON string of cache-dit overrides merged over the
+        # defaults, e.g. '{"enable_taylorseer": true}'.
+        cache_config = dict(DEFAULT_CACHE_CONFIG)
+        if os.environ.get("CACHE_CONFIG"):
+            try:
+                overrides = json.loads(os.environ["CACHE_CONFIG"])
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"CACHE_CONFIG is not valid JSON: {exc}\n"
+                    f"  got: {os.environ['CACHE_CONFIG']!r}") from exc
+            cache_config.update(overrides)
 
         return cls(
             model=env("MODEL", MODEL_DEFAULT),
@@ -108,7 +167,7 @@ class DeployConfig:
             diffusion_attention_backend=env("DIFFUSION_ATTENTION_BACKEND", "CUDNN_ATTN"),
             quantization=env("QUANTIZATION", "fp8"),
             enable_cpu_offload=env("ENABLE_CPU_OFFLOAD", "1") == "1",
-            residual_diff_threshold=env("RESIDUAL_DIFF_THRESHOLD", 0.04, float),
+            cache_config=cache_config,
             log_path=env("LOG", "logs/deploy.log"),
             pid_file=env("PID_FILE", "logs/deploy.pid"),
             health_timeout_min=env("HEALTH_TIMEOUT_MIN", 15, int),
@@ -116,14 +175,7 @@ class DeployConfig:
 
     def build_cmd(self) -> list[str]:
         """config -> vllm serve CLI (single source of truth for the mapping)."""
-        cache_config = json.dumps({
-            "Fn_compute_blocks": 1,
-            "Bn_compute_blocks": 0,
-            "max_warmup_steps": 4,
-            "residual_diff_threshold": self.residual_diff_threshold,
-            "max_continuous_cached_steps": 1,
-            "enable_taylorseer": False,
-        })
+        cache_config = json.dumps(self.cache_config)
         num_gpus = len(self.cuda_visible_devices.split(","))
         cmd = [
             "vllm", "serve", self.model,
