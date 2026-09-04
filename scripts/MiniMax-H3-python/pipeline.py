@@ -52,11 +52,15 @@ class PipelineConfig:
     warmup: int = 2   # leading requests parse_log drops from the trial log
 
     def deploy_cfg(self) -> DeployConfig:
-        """deploy_base with per-trial log/pid paths under logs/."""
+        """deploy_base with a per-trial log path under logs/.
+
+        (No pid_file override: pid files exist only for deploy.py's
+        --detach/--stop flow; Pipeline stops services in-process via
+        Deployer, which never goes through a pid file.)
+        """
         return dataclasses.replace(
             self.deploy_base,
             log_path=f"logs/{self.name}.log",
-            pid_file=f"logs/{self.name}.pid",
         )
 
     def generate_cfg(self, port: int) -> GenerateConfig:
