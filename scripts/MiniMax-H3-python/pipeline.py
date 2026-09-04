@@ -104,6 +104,7 @@ class PipelineConfig:
                 "git_commit": _git_commit(),
                 "argv": sys.argv,
                 "warmup": self.warmup,
+                "gpus": _gpu_info(),
             },
             "deploy": deploy,
             "generate": generate,
@@ -182,6 +183,28 @@ def _git_commit() -> str:
         ).stdout.strip()
     except Exception:
         return ""
+
+
+def _gpu_info() -> dict[str, int]:
+    """The host's full GPU inventory as {model: count}, best-effort.
+
+    Covers every card on the machine (not just cuda_visible_devices — which
+    GPUs a run used lives in deploy.cuda_visible_devices); mixed models just
+    add up as separate entries. Returns {} without nvidia-smi.
+    """
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=15,
+        ).stdout.strip()
+    except Exception:
+        return {}
+    counts: dict[str, int] = {}
+    for line in out.splitlines():
+        name = line.strip()
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+    return counts
 
 
 def main() -> int:
