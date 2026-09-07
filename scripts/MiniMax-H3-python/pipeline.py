@@ -42,9 +42,9 @@ import subprocess
 import sys
 import time
 
-import parse_log
 from deploy import DeployConfig, Deployer
 from generate import GenerateConfig, Generator
+from parser import LogParser
 
 LOGS_ROOT = "logs"
 
@@ -155,7 +155,7 @@ class Pipeline:
 
 
 def summarize_log(path: str, warmup: int) -> dict:
-    return parse_log.summarize(parse_log.parse_log(path), warmup)
+    return LogParser(path).parse().summarize(warmup)
 
 
 # Run dirs issued by this process (same-second collisions are not yet on
