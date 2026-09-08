@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Single-trial pipeline: deploy -> generate (N rounds) -> parse metrics.
+"""Single-trial pipeline: deploy -> generate (N rounds) -> collect metrics.
 
-Composes deploy.py's Deployer with generate.py's Generator into one run:
+Composes deploy.py's Deployer, generate.py's Generator and metrics.py's
+Metrics into one run:
 
     from deploy import DeployConfig
     from generate import GenerateConfig
@@ -54,7 +55,7 @@ import time
 
 from deploy import DeployConfig, Deployer
 from generate import GenerateConfig, Generator
-from parser import LogParser
+from metrics import Metrics
 
 LOGS_ROOT = "logs"
 
@@ -102,7 +103,7 @@ class PipelineConfig:
     generate_base: GenerateConfig = dataclasses.field(
         default_factory=GenerateConfig)
     run_dir: str = ""    # derived: logs/<YYYYmmdd-HHMMSS> unless set
-    warmup: int = 2      # leading requests parse_log drops from the log
+    warmup: int = 2      # leading requests Metrics drops from the log
 
     @classmethod
     def from_config(cls, source, run_dir: str = "") -> "PipelineConfig":
@@ -215,12 +216,12 @@ class Pipeline:
                 self.row["client_ok"] = traffic_ok
                 self.row["client_elapsed_s"] = round(sum(
                     r["elapsed"] for r in gen.results), 1)
-            # The service is stopped; its log is complete — parse it.
-            self.row["metrics"] = summarize_log(deploy_cfg.log_path,
-                                                cfg.warmup)
+            # The service is stopped; its log is complete — collect metrics.
+            self.row["metrics"] = Metrics(warmup=cfg.warmup).collect(
+                deploy_cfg.log_path)
             self.row["ok"] = bool(traffic_ok
                                   and not self.row["metrics"]["failures"])
-        except Exception as exc:  # deployment failure or parser crash
+        except Exception as exc:  # deployment failure or metrics crash
             self.row["ok"] = False
             self.row["error"] = f"{type(exc).__name__}: {exc}"
             self.row["metrics"] = {"failures": 1}
@@ -228,10 +229,6 @@ class Pipeline:
         with open(os.path.join(cfg.run_dir, "metrics.json"), "w") as fh:
             json.dump(self.row, fh, indent=2)
         return self.row
-
-
-def summarize_log(path: str, warmup: int) -> dict:
-    return LogParser(path).parse().summarize(warmup)
 
 
 # Run dirs issued by this process (same-second collisions are not yet on

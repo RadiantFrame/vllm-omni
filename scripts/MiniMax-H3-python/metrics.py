@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Extract grid-search metrics from a vLLM-Omni deploy/inference log.
+"""Extract metrics from a finished vLLM-Omni deploy/generate run.
 
-LogParser reads one service log (default logs/deploy.log, the stdout+stderr
-of a `vllm serve` started by deploy.py) and emits the metrics a
-deploy+generate grid search needs to score each configuration point:
+The pipeline's third phase (deploy -> generate -> METRICS) lives here:
+`Metrics` turns a run's artifacts into the summary dict written to
+run_dir/metrics.json. Its current source is the service log via
+`LogParser`:
 
   latency    steady-state e2e_total_ms per request (rounds 1-2 are compile
              warmup / lazy-init settling and are excluded by default),
@@ -12,9 +13,13 @@ deploy+generate grid search needs to score each configuration point:
   resources  model-load time/GiB, per-worker GPU memory after load
   failures   FATAL / Traceback / OOM / health-timeout occurrences
 
+Future metric families plug into Metrics.collect() as additional sources
+over the run artifacts — e.g. visual quality (SSIM/PSNR/FVD over
+run_dir/outputs/*.mp4) — feeding the same summary dict.
+
 Usage:
-  python parser.py [LOG_PATH] [--warmup N] [--json]
-  python parser.py logs/deploy.log --json > metrics.json
+  python metrics.py [LOG_PATH] [--warmup N] [--json]
+  python metrics.py logs/deploy.log --json > metrics.json
 
 The per-request series is keyed by request order of appearance in the log
 (the generate.py rounds fire sequentially, so order == round number).
@@ -212,6 +217,30 @@ class LogParser:
         return out
 
 
+class Metrics:
+    """Stage-3 collector: a finished run's artifacts -> the metrics dict.
+
+    Pipeline-facing interface for the deploy -> generate -> METRICS phases;
+    LogParser (the service-log source) is an implementation detail this
+    class composes. The instance carries the analysis knobs (`warmup` =
+    leading requests dropped as compile/settling warmup); the run's
+    artifacts are collect() arguments, not constructor state.
+
+    Extension point: visual-quality metrics over the run's generated
+    videos belong in collect() as a second source, e.g.
+    Metrics(warmup=...).collect(log_path, outputs_dir=...) adding
+    SSIM/PSNR keys.
+    """
+
+    def __init__(self, warmup: int = 2):
+        self.warmup = warmup
+
+    def collect(self, log_path: str) -> dict:
+        """Summarize the run's service log; shape mirrors
+        LogParser.summarize()."""
+        return LogParser(log_path).parse().summarize(self.warmup)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("log_path", nargs="?", default=DEFAULT_LOG,
@@ -223,12 +252,10 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        log = LogParser(args.log_path).parse()
+        summary = Metrics(warmup=args.warmup).collect(args.log_path)
     except OSError as exc:
         print(f"ERROR: cannot read {args.log_path}: {exc}", file=sys.stderr)
         return 1
-
-    summary = log.summarize(args.warmup)
     if args.json:
         print(json.dumps(summary, indent=2))
         return 0
