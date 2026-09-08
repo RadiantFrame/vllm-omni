@@ -126,6 +126,10 @@ class GenerateConfig:
             request_timeout=env("REQUEST_TIMEOUT", 4500.0, float),
         )
 
+    # Fields __post_init__ re-derives from input_dir — they are snapshot
+    # OUTPUT, not config input. Overriding them would be silently discarded.
+    DERIVED_FIELDS = frozenset({"prompt", "prompt_file", "ref_files"})
+
     @classmethod
     def from_config(cls, overrides: dict) -> "GenerateConfig":
         """Config-file constructor: from_env() plus a dict of key overrides.
@@ -133,12 +137,22 @@ class GenerateConfig:
         Symmetric to from_env() (env still fills anything the dict omits;
         the dict wins per key). Unknown keys are rejected so a typo fails
         loudly. replace() re-runs __post_init__, so derived fields
-        (prompt/ref_files) reload against the overridden input_dir/task_type.
+        (prompt/ref_files) reload against the overridden input_dir/task_type;
+        passing those derived keys explicitly is not an error (run snapshots
+        contain them) but they are stripped with a warning — edit input_dir
+        instead.
         """
         cfg = cls.from_env()
         if not isinstance(overrides, dict):
             raise TypeError(f"generate overrides must be a dict, got "
                             f"{type(overrides).__name__}")
+        derived = set(overrides) & cls.DERIVED_FIELDS
+        if derived:
+            print(f"[generate] WARNING: ignoring derived key(s) {sorted(derived)} "
+                  f"from config — they are re-derived from input_dir; "
+                  f"set input_dir instead", file=sys.stderr)
+            overrides = {k: v for k, v in overrides.items()
+                         if k not in cls.DERIVED_FIELDS}
         unknown = set(overrides) - {f.name for f in dataclasses.fields(cfg)}
         if unknown:
             raise ValueError(f"generate config has unknown key(s) "
