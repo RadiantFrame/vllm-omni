@@ -26,21 +26,23 @@ Env knobs (defaults match the bash version unless noted):
   OUT_DIR        output directory                             (./outputs)
   ROUNDS         rounds of concurrent fan-out                 (5)
   SEED           generation seed                              (0)
-  TASK_TYPE      extra_params task                            (fl2va)
+  TASK_TYPE      extra_params task: fl2va | ref2va           (fl2va)
   DURATION       audio/video seconds in extra_params          (5)
   WIDTH          explicit output width                        (832)
   HEIGHT         explicit output height                       (480)
   INPUT_DIR      the ONLY input knob: per-case directory holding prompt.txt
-                 plus 0-2 reference frame images (0 = text-only, 1 = first
-                 frame, 2 = first + last frame, sorted filename order =
-                 upload order). Default: <repo>/inputs/i2va. No URL
-                 download; PROMPT_FILE/FRAMES env overrides do not exist.
+                 plus reference files (sorted filename order = upload order,
+                 which defines the <Picture/Video N> numbering in the prompt).
+                 fl2va: 0-2 reference frame images, default <repo>/inputs/i2va.
+                 ref2va: mixed images/videos/audios (<=9 img, <=3 vid, <=3 aud,
+                 <=12 total), default <repo>/inputs/r2va.
   REQUEST_TIMEOUT  per-request read timeout, seconds         (1800)
 
 Notes:
 - The request is multipart form -> POST http://HOST:PORT/v1/videos/sync,
-  exactly mirroring the curl -F fields of the bash client, including the
-  repeated "input_reference" file fields (one per frame).
+  exactly mirroring the curl -F fields of the bash clients: fl2va repeats
+  "input_reference" image fields; ref2va repeats "input_references" fields
+  whose modality the server detects from each file's MIME type.
 - Per-request wall time is measured client-side (in addition to the
   server-side e2e_total_ms you can grep from service logs).
 """
@@ -48,6 +50,7 @@ Notes:
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import shutil
 import subprocess
@@ -101,6 +104,9 @@ class GenerateConfig:
             return cast(raw) if raw else default
 
         ports_env = os.environ.get("PORTS", "")
+        # Only INPUT_DIR is task-aware (fl2va -> inputs/i2va, ref2va ->
+        # inputs/r2va); all other defaults are shared between tasks.
+        task_type = env("TASK_TYPE", "fl2va")
         return cls(
             host=env("HOST", "localhost"),
             port_base=env("PORT_BASE", 9000, int),
@@ -109,11 +115,13 @@ class GenerateConfig:
             out_dir=env("OUT_DIR", "./outputs"),
             rounds=env("ROUNDS", 5, int),
             seed=env("SEED", "0"),
-            task_type=env("TASK_TYPE", "fl2va"),
+            task_type=task_type,
             duration=env("DURATION", 5, int),
             width=env("WIDTH", 832, int),
             height=env("HEIGHT", 480, int),
-            input_dir=env("INPUT_DIR", os.path.join(REPO_ROOT, "inputs", "i2va")),
+            input_dir=env("INPUT_DIR", os.path.join(
+                REPO_ROOT, "inputs", "r2va" if task_type == "ref2va"
+                else "i2va")),
             request_timeout=env("REQUEST_TIMEOUT", 4500.0, float),
         )
 
@@ -134,12 +142,53 @@ class GenerateConfig:
             raise OSError(f"cannot read INPUT_DIR {self.input_dir}: {exc}") from exc
         self.ref_files = [os.path.join(self.input_dir, n) for n in names
                           if n != "prompt.txt" and not n.startswith("README")]
-        if len(self.ref_files) > 2:
-            raise ValueError(f"INPUT_DIR holds more than 2 reference frame "
-                             f"images (first [+ last]): {self.ref_files}")
+        self._validate_refs()
+
+    # Ref2VA contract (enforced server-side, checked here for a clearer
+    # client-side error): <=9 images, <=3 videos, <=3 audios, <=12 total.
+    IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm"}
+    AUDIO_EXTS = {".wav", ".mp3", ".flac", ".m4a"}
+
+    def _ref_kind(self, path: str) -> str:
+        ext = os.path.splitext(path)[1].lower()
+        if ext in self.IMAGE_EXTS:
+            return "image"
+        if ext in self.VIDEO_EXTS:
+            return "video"
+        if ext in self.AUDIO_EXTS:
+            return "audio"
+        raise ValueError(f"unrecognized reference modality for '{path}' "
+                         f"(extension '{ext}' is not image/video/audio)")
+
+    def _validate_refs(self) -> None:
+        if self.task_type == "ref2va":
+            kinds = [self._ref_kind(p) for p in self.ref_files]
+            counts = {k: kinds.count(k) for k in ("image", "video", "audio")}
+            limits = {"image": 9, "video": 3, "audio": 3}
+            for kind, limit in limits.items():
+                if counts[kind] > limit:
+                    raise ValueError(f"ref2va allows at most {limit} {kind} "
+                                     f"reference(s), got {counts[kind]}")
+            if len(self.ref_files) > 12:
+                raise ValueError(f"ref2va allows at most 12 reference files, "
+                                 f"got {len(self.ref_files)}")
+        else:
+            for p in self.ref_files:
+                kind = self._ref_kind(p)
+                if kind != "image":
+                    raise ValueError(f"{self.task_type} reference files must "
+                                     f"be images, got {kind}: {p}")
+            if len(self.ref_files) > 2:
+                raise ValueError(f"INPUT_DIR holds more than 2 reference frame "
+                                 f"images (first [+ last]): {self.ref_files}")
 
     @property
     def ref_desc(self) -> str:
+        if self.task_type == "ref2va":
+            n = len(self.ref_files)
+            return f"{n} reference file(s) ({'/'.join(sorted(set(
+                self._ref_kind(p) for p in self.ref_files))) or 'none'})"
         return {
             0: "0 reference frames (text-only)",
             1: "first frame only",
@@ -211,10 +260,16 @@ class Generator:
         """Send one request; returns a result record."""
         url = f"http://{self.cfg.host}:{port}/v1/videos/sync"
         form = self.cfg.build_form()
-        # One repeated "input_reference" file field per frame (order matters:
-        # first, then last) — mirrors the bash client's FRAME_FLAGS.
+        # Repeated file field per reference (upload order = <Picture/Video N>
+        # numbering in the prompt). Field name and MIME follow the task:
+        # fl2va/t2va send "input_reference" image frames; ref2va sends
+        # "input_references" mixed image/video/audio files whose modality the
+        # server detects from the MIME type.
+        field = "input_references" if self.cfg.task_type == "ref2va" \
+            else "input_reference"
         frame_handles = [open(p, "rb") for p in self.cfg.ref_files]
-        files = [("input_reference", (os.path.basename(p), fh, "image/png"))
+        files = [(field, (os.path.basename(p), fh,
+                          mimetypes.guess_type(p)[0] or "image/png"))
                  for p, fh in zip(self.cfg.ref_files, frame_handles)]
         started = time.monotonic()
         try:
