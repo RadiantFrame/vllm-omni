@@ -173,6 +173,33 @@ class DeployConfig:
             health_timeout_min=env("HEALTH_TIMEOUT_MIN", 15, int),
         )
 
+    @classmethod
+    def from_config(cls, overrides: dict) -> "DeployConfig":
+        """Config-file constructor: from_env() plus a dict of key overrides.
+
+        Symmetric to from_env() (env still fills anything the dict omits;
+        the dict wins per key). Unknown keys are rejected so a typo fails
+        loudly instead of silently no-op'ing. A partial cache_config dict
+        MERGES over the resolved value (same semantics as CACHE_CONFIG).
+        """
+        cfg = cls.from_env()
+        if not isinstance(overrides, dict):
+            raise TypeError(f"deploy overrides must be a dict, got "
+                            f"{type(overrides).__name__}")
+        unknown = set(overrides) - {f.name for f in dataclasses.fields(cfg)}
+        if unknown:
+            raise ValueError(f"deploy config has unknown key(s) "
+                             f"{sorted(unknown)}; valid keys are the "
+                             f"DeployConfig field names: "
+                             f"{sorted(f.name for f in dataclasses.fields(cfg))}")
+        kw = {k: v for k, v in overrides.items() if k != "cache_config"}
+        if "cache_config" in overrides:
+            merged = dict(cfg.cache_config)
+            merged.update(overrides["cache_config"])
+            kw["cache_config"] = merged
+        # replace() re-runs __post_init__, re-validating cache_config keys.
+        return dataclasses.replace(cfg, **kw)
+
     def build_cmd(self) -> list[str]:
         """config -> vllm serve CLI (single source of truth for the mapping)."""
         cache_config = json.dumps(self.cache_config)

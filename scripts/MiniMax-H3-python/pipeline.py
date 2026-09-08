@@ -29,6 +29,16 @@ just many runs; see search.py, which adds a flat JSONL index over them).
 
 CLI (one run from env knobs):
     python pipeline.py
+
+CLI (one run from a config file, recommended for reproducible setups):
+    python pipeline.py --config my_run.json
+
+Precedence: dataclass defaults < env knobs < config file < --run-dir.
+Each class owns its own construction: PipelineConfig.from_config() reads
+the file and delegates the deploy/generate sections to
+DeployConfig.from_config() / GenerateConfig.from_config(); keys unknown
+to the target class are rejected (typos fail loudly instead of
+silently no-op'ing).
 """
 
 from __future__ import annotations
@@ -48,6 +58,35 @@ from parser import LogParser
 
 LOGS_ROOT = "logs"
 
+_TOP_LEVEL_KEYS = {"deploy", "generate", "warmup", "run_dir", "meta"}
+
+
+def _read_config_doc(source) -> dict:
+    """Config source (JSON file path or dict) -> validated top-level dict.
+
+    "meta" (present in run snapshots) is accepted but dropped — it is run
+    bookkeeping, not configuration.
+    """
+    if isinstance(source, dict):
+        doc, where = source, "config dict"
+    else:
+        try:
+            with open(source, encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{source} is not valid JSON: {exc}") from exc
+        except OSError as exc:
+            raise ValueError(f"cannot read config file {source}: {exc}") from exc
+        where = source
+    if not isinstance(doc, dict):
+        raise ValueError(f"{where}: top level must be a JSON object")
+    unknown = set(doc) - _TOP_LEVEL_KEYS
+    if unknown:
+        raise ValueError(f"{where}: unknown top-level key(s) {sorted(unknown)}; "
+                         f"valid: {sorted(_TOP_LEVEL_KEYS - {'meta'})}")
+    doc.pop("meta", None)
+    return doc
+
 
 @dataclasses.dataclass
 class PipelineConfig:
@@ -64,6 +103,38 @@ class PipelineConfig:
         default_factory=GenerateConfig)
     run_dir: str = ""    # derived: logs/<YYYYmmdd-HHMMSS> unless set
     warmup: int = 2      # leading requests parse_log drops from the log
+
+    @classmethod
+    def from_config(cls, source, run_dir: str = "") -> "PipelineConfig":
+        """Config-file constructor, symmetric to the parts' from_env().
+
+        source: path to a JSON file (or an already-parsed dict). Shape —
+        every key is optional; a section's keys override env knobs:
+
+            {
+              "deploy":   {"cuda_visible_devices": "4,5,6,7", "usp": 4, ...},
+              "generate": {"task_type": "ref2va", "duration": 15, ...},
+              "warmup":   2,
+              "run_dir":  "logs/my-fixed-name"
+            }
+
+        deploy/generate are validated and applied by DeployConfig.from_config
+        / GenerateConfig.from_config (unknown keys fail loudly; partial
+        deploy.cache_config merges over the defaults). Precedence overall:
+        dataclass defaults < env knobs < config file < run_dir argument.
+        """
+        doc = _read_config_doc(source)
+        cfg = cls(
+            deploy_base=DeployConfig.from_config(doc.get("deploy", {})),
+            generate_base=GenerateConfig.from_config(doc.get("generate", {})),
+            run_dir=run_dir or doc.get("run_dir", ""),
+        )
+        if "warmup" in doc:
+            if not isinstance(doc["warmup"], int):
+                raise ValueError(f"'warmup' must be an int, got "
+                                 f"{type(doc['warmup']).__name__}")
+            cfg.warmup = doc["warmup"]
+        return cfg
 
     def __post_init__(self) -> None:
         if not self.run_dir:
@@ -93,6 +164,11 @@ class PipelineConfig:
         Includes defaults and derived values so the run is reproducible from
         this file alone; the raw prompt text is omitted (input_dir +
         ref_files already identify it).
+
+        Schema mirrors the --config file (deploy/generate/warmup sections)
+        plus a read-only "meta" block that from_config() skips — so the
+        snapshot can be fed straight back as --config to replay a run
+        (run_dir is omitted: a replay gets a fresh timestamped dir).
         """
         deploy = dataclasses.asdict(self.deploy_cfg())
         generate = dataclasses.asdict(self.generate_cfg(port=self.deploy_base.port))
@@ -103,11 +179,11 @@ class PipelineConfig:
                 "hostname": socket.gethostname(),
                 "git_commit": _git_commit(),
                 "argv": sys.argv,
-                "warmup": self.warmup,
                 "gpus": _gpu_info(),
             },
             "deploy": deploy,
             "generate": generate,
+            "warmup": self.warmup,
         }
 
 
@@ -209,15 +285,23 @@ def _gpu_info() -> dict[str, int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--config", default=None, metavar="FILE",
+                        help="pipeline config file (JSON; sections: deploy, "
+                             "generate, warmup, run_dir). File keys override "
+                             "env knobs; --run-dir overrides the file")
     parser.add_argument("--run-dir", default=None,
                         help="override the auto-generated logs/<timestamp> dir")
     args = parser.parse_args()
     try:
-        cfg = PipelineConfig(
-            deploy_base=DeployConfig.from_env(),
-            generate_base=GenerateConfig.from_env(),
-            run_dir=args.run_dir or "",
-        )
+        if args.config:
+            cfg = PipelineConfig.from_config(args.config,
+                                             run_dir=args.run_dir or "")
+        else:
+            cfg = PipelineConfig(
+                deploy_base=DeployConfig.from_env(),
+                generate_base=GenerateConfig.from_env(),
+                run_dir=args.run_dir or "",
+            )
     except (OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
