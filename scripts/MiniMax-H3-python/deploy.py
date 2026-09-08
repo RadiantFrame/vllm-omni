@@ -25,9 +25,9 @@ Config knobs (env names = field names uppercased; defaults mirror 4rtx5090/deplo
   PORT                       service port                    (9000)
   CUDA_VISIBLE_DEVICES       gpu list                        (0,1,2,3)
   TENSOR_PARALLEL_SIZE       (4)
-  TEXT_ENCODER_TP_SIZE       (4)
+  TEXT_ENCODER_TP_SIZE       (= GPU count)
   USP / RING                 (1 / 1)
-  VAE_PATCH_PARALLEL_SIZE    (4)
+  VAE_PATCH_PARALLEL_SIZE    (= GPU count)
   QUANTIZATION               "fp8" or "" to disable          (fp8)
   ENABLE_CPU_OFFLOAD         1/0                             (1)
   DIFFUSION_ATTENTION_BACKEND                                 (CUDNN_ATTN)
@@ -117,8 +117,12 @@ class DeployConfig:
     tensor_parallel_size: int = 4
     usp: int = 1
     ring: int = 1
-    text_encoder_tp_size: int = 4
-    vae_patch_parallel_size: int = 4
+    # None = auto: full device width (len(cuda_visible_devices)). Every bash
+    # deploy profile sets both to the GPU count — text encoder sharded across
+    # all cards, VAE patch/tile-parallel across all cards — so the non-DiT
+    # stages never bottleneck and leave DiT weight headroom per card.
+    text_encoder_tp_size: int | None = None
+    vae_patch_parallel_size: int | None = None
     num_weight_load_threads: int = 8
     diffusion_attention_backend: str = "CUDNN_ATTN"
     quantization: str = "fp8"           # "" disables the flag
@@ -134,6 +138,11 @@ class DeployConfig:
     health_timeout_min: int = 15
 
     def __post_init__(self) -> None:
+        num_gpus = len(self.cuda_visible_devices.split(","))
+        if self.text_encoder_tp_size is None:
+            self.text_encoder_tp_size = num_gpus
+        if self.vae_patch_parallel_size is None:
+            self.vae_patch_parallel_size = num_gpus
         unknown = set(self.cache_config) - _CACHE_CONFIG_KEYS
         if unknown:
             raise ValueError(
@@ -167,8 +176,8 @@ class DeployConfig:
             tensor_parallel_size=env("TENSOR_PARALLEL_SIZE", 4, int),
             usp=env("USP", 1, int),
             ring=env("RING", 1, int),
-            text_encoder_tp_size=env("TEXT_ENCODER_TP_SIZE", 4, int),
-            vae_patch_parallel_size=env("VAE_PATCH_PARALLEL_SIZE", 4, int),
+            text_encoder_tp_size=env("TEXT_ENCODER_TP_SIZE", None, int),
+            vae_patch_parallel_size=env("VAE_PATCH_PARALLEL_SIZE", None, int),
             num_weight_load_threads=env("NUM_WEIGHT_LOAD_THREADS", 8, int),
             diffusion_attention_backend=env("DIFFUSION_ATTENTION_BACKEND", "CUDNN_ATTN"),
             quantization=env("QUANTIZATION", "fp8"),
