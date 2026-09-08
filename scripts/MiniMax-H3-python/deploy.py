@@ -107,6 +107,11 @@ class DeployConfig:
     """
 
     model: str = MODEL_DEFAULT
+    # "auto" infers the checkpoint partition from the MODEL path
+    # (FL2VA->fl2va, Ref2VA->ref2va, H3 root->combined) — mirrors the bash
+    # deploy scripts. Without --task-type the server boots the fl2va
+    # partition and rejects ref2va requests with HTTP 500.
+    task_type: str = "auto"
     port: int = 9000
     cuda_visible_devices: str = "0,1,2,3"
     tensor_parallel_size: int = 4
@@ -156,6 +161,7 @@ class DeployConfig:
 
         return cls(
             model=env("MODEL", MODEL_DEFAULT),
+            task_type=env("TASK_TYPE", "auto"),
             port=env("PORT", 9000, int),
             cuda_visible_devices=env("CUDA_VISIBLE_DEVICES", "0,1,2,3"),
             tensor_parallel_size=env("TENSOR_PARALLEL_SIZE", 4, int),
@@ -206,7 +212,8 @@ class DeployConfig:
         num_gpus = len(self.cuda_visible_devices.split(","))
         cmd = [
             "vllm", "serve", self.model,
-            "--omni", 
+            "--omni",
+            "--task-type", self.task_type,
             "--trust-remote-code",
             "--host", "0.0.0.0", 
             "--port", str(self.port),
