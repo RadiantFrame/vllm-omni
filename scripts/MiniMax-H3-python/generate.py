@@ -50,6 +50,7 @@ Notes:
 from __future__ import annotations
 
 import json
+import dataclasses
 import mimetypes
 import os
 import shutil
@@ -124,6 +125,27 @@ class GenerateConfig:
                 else "i2va")),
             request_timeout=env("REQUEST_TIMEOUT", 4500.0, float),
         )
+
+    @classmethod
+    def from_config(cls, overrides: dict) -> "GenerateConfig":
+        """Config-file constructor: from_env() plus a dict of key overrides.
+
+        Symmetric to from_env() (env still fills anything the dict omits;
+        the dict wins per key). Unknown keys are rejected so a typo fails
+        loudly. replace() re-runs __post_init__, so derived fields
+        (prompt/ref_files) reload against the overridden input_dir/task_type.
+        """
+        cfg = cls.from_env()
+        if not isinstance(overrides, dict):
+            raise TypeError(f"generate overrides must be a dict, got "
+                            f"{type(overrides).__name__}")
+        unknown = set(overrides) - {f.name for f in dataclasses.fields(cfg)}
+        if unknown:
+            raise ValueError(f"generate config has unknown key(s) "
+                             f"{sorted(unknown)}; valid keys are the "
+                             f"GenerateConfig field names: "
+                             f"{sorted(f.name for f in dataclasses.fields(cfg))}")
+        return dataclasses.replace(cfg, **overrides)
 
     def __post_init__(self) -> None:
         if not self.ports:
