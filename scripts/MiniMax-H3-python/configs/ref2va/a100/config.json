@@ -1,0 +1,37 @@
+{
+  "deploy": {
+    "model": "/data/models/modelscope/MiniMax/MiniMax-H3/Ref2VA",
+    "cuda_visible_devices": "0,1,2,3",
+    "tensor_parallel_size": 1,
+    "usp": 4,
+    "num_weight_load_threads": 8,
+    "diffusion_attention_backend": "FLASH_ATTN",
+    "quantization": "fp8",
+    "enable_cpu_offload": false,
+    "cache_config": {
+      "Fn_compute_blocks": 1,
+      "Bn_compute_blocks": 0,
+      "max_warmup_steps": 4,
+      "max_cached_steps": -1,
+      "max_continuous_cached_steps": 1,
+      "residual_diff_threshold": 0.04,
+      "enable_taylorseer": false,
+      "taylorseer_order": 1,
+      "scm_steps_mask_policy": null,
+      "scm_steps_policy": "dynamic",
+      "num_inference_steps": null,
+      "force_refresh_step_hint": null,
+      "force_refresh_step_policy": "once"
+    }
+  },
+  "generate": {
+    "rounds": 5,
+    "seed": "0",
+    "task_type": "ref2va",
+    "duration": 15,
+    "width": 1344,
+    "height": 768,
+    "input_dir": "/data/jw/workspace/vllm-omni/inputs/r2va-omni"
+  },
+  "warmup": 3
+}
