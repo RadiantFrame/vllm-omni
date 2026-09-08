@@ -297,9 +297,12 @@ def _cleanup_video_references(
 
 def _unpack_video_generation_result(
     result: Sequence[object],
-) -> tuple[bytes, dict[str, float], float, VideoAction | None, dict[str, object]]:
+) -> tuple[bytes, dict[str, float], float, VideoAction | None, dict[str, object], float | None]:
     video_metadata: dict[str, object] = {}
-    if len(result) == 5:
+    e2e_total_ms: float | None = None
+    if len(result) == 6:
+        video_bytes, stage_durations, peak_memory_mb, action, raw_metadata, e2e_total_ms = result
+    elif len(result) == 5:
         video_bytes, stage_durations, peak_memory_mb, action, raw_metadata = result
         if isinstance(raw_metadata, dict):
             video_metadata = {str(key): value for key, value in raw_metadata.items()}
@@ -311,6 +314,7 @@ def _unpack_video_generation_result(
         float(cast(float, peak_memory_mb)),
         cast(VideoAction | None, action),
         video_metadata,
+        cast(float | None, e2e_total_ms),
     )
 
 
@@ -333,7 +337,7 @@ async def _run_video_generation_job(
     await VIDEO_STORE.update_fields(video_id, {"status": VideoGenerationStatus.IN_PROGRESS})
     started_at = time.perf_counter()
     try:
-        video_bytes, stage_durations, peak_memory_mb, action, video_metadata = _unpack_video_generation_result(
+        video_bytes, stage_durations, peak_memory_mb, action, video_metadata, e2e_total_ms = _unpack_video_generation_result(
             await handler.generate_video_bytes(
                 request,
                 video_id,
@@ -352,6 +356,7 @@ async def _run_video_generation_job(
             "file_name": f"{video_id}.{job.file_extension}",
             "completed_at": save_context.created_at,
             "inference_time_s": time.perf_counter() - started_at,
+            "e2e_total_ms": e2e_total_ms,
             "stage_durations": stage_durations,
             "peak_memory_mb": peak_memory_mb,
             "action": action,
