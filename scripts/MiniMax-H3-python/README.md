@@ -12,8 +12,8 @@ Python counterpart of the bash scripts under `scripts/MiniMax-H3/` and
 |---|---|---|
 | `deploy.py` | `DeployConfig` / `Deployer` | Start/stop one `vllm serve` service and wait for health |
 | `generate.py` | `GenerateConfig` / `Generator` | Fan out N rounds of FL2VA requests to service port(s) |
-| `parser.py` | `LogParser` | Extract steady-state metrics from a service log |
-| `pipeline.py` | `PipelineConfig` / `Pipeline` | One run: deploy → generate → stop → parse |
+| `metrics.py` | `Metrics` / `LogParser` | Extract steady-state metrics from a service log |
+| `pipeline.py` | `PipelineConfig` / `Pipeline` | One run: deploy → generate → stop → collect metrics |
 | `search.py` | `SearchConfig` / `Search` | Grid search: many Pipeline runs + a flat JSONL index |
 
 Dependency chain (each layer imports only below it):
@@ -21,9 +21,9 @@ Dependency chain (each layer imports only below it):
 ```
 deploy.py   generate.py      atomic capabilities (know nothing of each other)
       \       /
-     parser.py               log → metrics (standalone)
+     metrics.py              run artifacts → metrics (LogParser + future sources)
         \    |
-      pipeline.py            one run = deploy + generate + parse
+      pipeline.py            one run = deploy + generate + metrics
           |
         search.py            many runs = grid expansion + loop + index
 ```
@@ -46,7 +46,7 @@ Every run owns a timestamped directory under `logs/`:
 logs/20260904-153012/
   config.json     effective-config snapshot + meta (started / git / host / GPUs)
   deploy.log      the vllm serve stdout+stderr for this run
-  metrics.json    LogParser summary (steady-state e2e, cache-dit, failures)
+  metrics.json    Metrics summary (steady-state e2e, cache-dit, failures)
   outputs/        generated .mp4 videos
 ```
 
@@ -55,7 +55,7 @@ Directory names carry only WHEN (timestamp); parameters live in
 
 ```bash
 jq -c 'select(.deploy.usp==2)' logs/*/config.json     # which runs used usp=2
-python parser.py logs/20260904-153012/deploy.log      # re-parse any run
+python metrics.py logs/20260904-153012/deploy.log      # re-parse any run
 ```
 
 ### Grid search
@@ -101,7 +101,7 @@ python deploy.py --stop          # graceful stop via pid file (TERM→wait→KIL
 python generate.py               # INPUT_DIR + env knobs, 5 rounds
 
 # metrics from any service log
-python parser.py logs/<run>/deploy.log [--json] [--warmup 2]
+python metrics.py logs/<run>/deploy.log [--json] [--warmup 2]
 ```
 
 ## Configuration
@@ -122,12 +122,14 @@ fields (INPUT_DIR resolution, run_dir timestamps) stay consistent.
   plus 0–2 reference frames (0 = text-only, 1 = first frame, 2 = first +
   last frame, sorted filename order = upload order; no URL downloads).
 - **`PipelineConfig`** (pipeline.py): the two bases + `warmup` (leading
-  requests LogParser drops) + `run_dir` (auto: `logs/<YYYYmmdd-HHMMSS>`).
+  requests Metrics drops) + `run_dir` (auto: `logs/<YYYYmmdd-HHMMSS>`).
 - **`SearchConfig`** (search.py): `pipeline_base`, `grid`, `index_path`.
 
 ## Metrics extracted per run
 
-`LogParser.summarize()` (see `metrics.json` in any run dir):
+`Metrics.collect()` (see `metrics.json` in any run dir; sourced today from
+the service log via `LogParser` — visual-quality families over
+`outputs/*.mp4` plug in here later):
 
 - **e2e_total_ms** steady mean/median/min/max + per-round series (rounds
   1–2 are compile warmup / lazy-init settling and are excluded by default)
