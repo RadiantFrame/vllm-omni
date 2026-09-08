@@ -410,11 +410,6 @@ class Generator:
 # main
 # ---------------------------------------------------------------------------
 
-def run_fanout(cfg: GenerateConfig) -> bool:
-    """Thin compatibility wrapper around Generator(cfg).run()."""
-    return Generator(cfg).run()
-
-
 def main() -> int:
     try:
         cfg = GenerateConfig.from_env()
