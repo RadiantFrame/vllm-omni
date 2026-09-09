@@ -4,15 +4,21 @@
 Wraps the two-step MiniMax API (create a H3-Context-IR task, then poll the
 video-generation query endpoint) into a single blocking call: the script
 exits when the task reaches a terminal state and prints the final result
-JSON (including the generated video's download URL).
+JSON. Unlike video generation, the result is text (modality: "text"): the
+enhanced prompt / context IR lives in task.content.prompt, ready to feed
+the follow-up video-generation call.
 
 Usage:
     MINIMAX_API_KEY=... python minimax_h3.py [--input-dir DIR]
+                                            [--ir-file FILE]
 
 Inputs come from INPUT_DIR (same convention as generate.py): a case
 directory holding prompt.txt plus 0-1 reference image (sorted filename
 order); the local image is uploaded as a base64 data URL. --input-dir
 overrides the INPUT_DIR env knob.
+
+On success the enhanced prompt (task.content.prompt) is written to
+--ir-file, defaulting to prompt_ir.txt next to the input prompt.txt.
 
 Env knobs (field names uppercased):
   MINIMAX_API_KEY     API bearer token                  (required)
@@ -26,6 +32,14 @@ Env knobs (field names uppercased):
 
 Exit code 0 = task succeeded; 1 = submission/HTTP error, task failure, or
 timeout. The terminal-state JSON is printed last either way.
+
+Docs:
+  https://platform.minimax.cn/docs/api-reference/api-overview
+      task lifecycle; on success the enhanced prompt is task.content.prompt
+  https://platform.minimax.io/docs/api-reference/video-generation-v2-list
+      V2 status enum: queued / running / succeeded / failed / cancelled
+  https://github.com/MiniMax-AI/MiniMax-H3
+      H3-Context-IR is hosted-API-only (not in the open release)
 """
 
 from __future__ import annotations
@@ -45,8 +59,10 @@ import requests
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 
-TERMINAL_OK = {"success", "succeed", "succeeded", "done", "success_finish"}
-TERMINAL_FAIL = {"fail", "failed", "error", "fail_finish", "cancelled"}
+# V2 async task states, shared by /v2 video generation, h3_context_ir and
+# video regeneration: queued -> running -> succeeded | failed | cancelled.
+TERMINAL_OK = {"succeeded"}
+TERMINAL_FAIL = {"failed", "cancelled"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
@@ -63,6 +79,7 @@ class ContextIRConfig:
     poll_timeout_s: float = 900.0
 
     # Derived in __post_init__ from input_dir (same pattern as GenerateConfig).
+    prompt_file: str = field(default="", init=False)  # input prompt.txt path
     prompt: str = field(default="", init=False)
     image_ref: str = field(default="", init=False)   # data URL, "" = text-only
 
@@ -85,10 +102,11 @@ class ContextIRConfig:
     def __post_init__(self) -> None:
         if not self.api_key:
             raise ValueError("MINIMAX_API_KEY is required (bearer token)")
-        prompt_file = os.path.join(self.input_dir, "prompt.txt")
-        if not os.path.isfile(prompt_file):
-            raise FileNotFoundError(f"{prompt_file} not found (check INPUT_DIR)")
-        with open(prompt_file, encoding="utf-8") as fh:
+        self.prompt_file = os.path.join(self.input_dir, "prompt.txt")
+        if not os.path.isfile(self.prompt_file):
+            raise FileNotFoundError(
+                f"{self.prompt_file} not found (check INPUT_DIR)")
+        with open(self.prompt_file, encoding="utf-8") as fh:
             self.prompt = fh.read()
         refs = [os.path.join(self.input_dir, n)
                 for n in sorted(os.listdir(self.input_dir))
@@ -172,9 +190,26 @@ class ContextIRClient:
         raise TimeoutError(f"task {task_id} not terminal after "
                            f"{self.cfg.poll_timeout_s:g}s; last response: {last}")
 
-    def run(self) -> dict:
-        """Submit + wait; returns the terminal response dict."""
-        return self.wait(self.submit())
+    def run(self, ir_file: str | None = None) -> dict:
+        """Submit + wait; returns the terminal response dict.
+
+        On success, saves the enhanced prompt (task.content.prompt) to
+        ir_file, defaulting to prompt_ir.txt next to cfg.prompt_file.
+        """
+        result = self.wait(self.submit())
+        if _task_status(result) not in TERMINAL_OK:
+            return result
+        path = ir_file or os.path.join(
+            os.path.dirname(self.cfg.prompt_file) or ".", "prompt_ir.txt")
+        prompt = _enhanced_prompt(result)
+        if not prompt:
+            print(f"[h3-ir] WARNING: no task.content.prompt in result; "
+                  f"nothing written to {path}")
+            return result
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(prompt)
+        print(f"[h3-ir] enhanced prompt saved: {path} ({len(prompt)} chars)")
+        return result
 
 
 def _json_or_text(resp: requests.Response):
@@ -187,15 +222,23 @@ def _json_or_text(resp: requests.Response):
 def _task_status(body) -> str:
     """Lowercased task status from a query response ('' when absent).
 
-    Accepts both the observed nested shape {"task": {"status": ...}} and a
-    flat {"status": ...} just in case.
+    Observed shape: {"task": {"status": "succeeded", ...}}.
     """
     if not isinstance(body, dict):
         return ""
     task = body.get("task")
-    if isinstance(task, dict) and task.get("status") is not None:
-        return str(task["status"]).lower()
-    return str(body.get("status", "") or "").lower()
+    if isinstance(task, dict):
+        return str(task.get("status", "") or "").lower()
+    return ""
+
+
+def _enhanced_prompt(body) -> str:
+    """task.content.prompt from a terminal response ('' when absent)."""
+    task = body.get("task") if isinstance(body, dict) else None
+    content = task.get("content") if isinstance(task, dict) else None
+    if isinstance(content, dict):
+        return str(content.get("prompt", "") or "")
+    return ""
 
 
 def main() -> int:
@@ -204,6 +247,10 @@ def main() -> int:
     parser.add_argument("--input-dir", default=None, metavar="DIR",
                         help="case directory holding prompt.txt + 0-1 image "
                              "(default: env INPUT_DIR, or <repo>/inputs/t2v)")
+    parser.add_argument("--ir-file", default=None, metavar="FILE",
+                        help="where to save the enhanced prompt on success "
+                             "(default: prompt_ir.txt next to the input "
+                             "prompt.txt)")
     args = parser.parse_args()
 
     try:
@@ -216,7 +263,7 @@ def main() -> int:
         return 1
 
     try:
-        result = ContextIRClient(cfg).run()
+        result = ContextIRClient(cfg).run(ir_file=args.ir_file)
     except (requests.RequestException, RuntimeError, TimeoutError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
