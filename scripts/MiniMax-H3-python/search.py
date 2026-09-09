@@ -151,16 +151,17 @@ class SearchConfig:
     def expanded(self) -> list[tuple[dict, PipelineConfig]]:
         """(point, PipelineConfig) per grid point, each with a fresh run_dir.
 
-        run_dir="" re-derives the timestamped directory via __post_init__,
-        so every point becomes an independent run under logs/. replace()
-        also re-derives the deploy parallel fields (usp / encoder TP / VAE
-        patch are init=False) — sweeping tensor_parallel_size moves them
-        automatically.
+        Points are built with run_dir=None (lazy): the timestamped directory
+        is claimed per point by Pipeline.run()/ensure_run_dir() when that
+        run actually starts, so expanding a grid never burns directory
+        names. replace() also re-derives the deploy parallel fields (usp /
+        encoder TP / VAE patch are init=False) — sweeping
+        tensor_parallel_size moves them automatically.
         """
         pairs = []
         for point in self.points():
             pairs.append((point, dataclasses.replace(
-                self.pipeline_base, run_dir="",
+                self.pipeline_base, run_dir=None,
                 deploy_base=dataclasses.replace(
                     self.pipeline_base.deploy_base,
                     **self._overrides(point, self.pipeline_base.deploy_base,
@@ -193,6 +194,7 @@ class Search:
         os.makedirs(os.path.dirname(self.cfg.index_path) or ".",
                     exist_ok=True)
         for i, (point, pcfg) in enumerate(trials, 1):
+            pcfg.ensure_run_dir()   # claim the timestamped dir for this run
             print(f"[search] === run {i}/{total}: {point_name(point) or '(baseline)'}"
                   f" -> {pcfg.run_dir} ===")
             row = Pipeline(pcfg).run()
