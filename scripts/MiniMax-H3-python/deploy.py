@@ -25,8 +25,9 @@ Config knobs (env names = field names uppercased; defaults mirror 4rtx5090/deplo
   PORT                       service port                    (9000)
   CUDA_VISIBLE_DEVICES       gpu list                        (0,1,2,3)
   TENSOR_PARALLEL_SIZE       (4)
+  USP                        (= GPU count / TP)
+  RING                       (1)
   TEXT_ENCODER_TP_SIZE       (= GPU count)
-  USP / RING                 (1 / 1)
   VAE_PATCH_PARALLEL_SIZE    (= GPU count)
   QUANTIZATION               "fp8" or "" to disable          (fp8)
   ENABLE_CPU_OFFLOAD         1/0                             (1)
@@ -115,7 +116,10 @@ class DeployConfig:
     port: int = 9000
     cuda_visible_devices: str = "0,1,2,3"
     tensor_parallel_size: int = 4
-    usp: int = 1
+    # None = auto: GPU count / tensor_parallel_size — the DiT parallel rule
+    # every bash profile follows (TP x USP = GPUs; 4rtx5090: 4x1, 4h800:
+    # 1x4, 8rtx5090: 4x2). Explicit values win; auto requires TP | GPUs.
+    usp: int | None = None
     ring: int = 1
     # None = auto: full device width (len(cuda_visible_devices)). Every bash
     # deploy profile sets both to the GPU count — text encoder sharded across
@@ -139,6 +143,13 @@ class DeployConfig:
 
     def __post_init__(self) -> None:
         num_gpus = len(self.cuda_visible_devices.split(","))
+        if self.usp is None:
+            if num_gpus % self.tensor_parallel_size:
+                raise ValueError(
+                    f"usp auto (= GPU count / tensor_parallel_size) needs "
+                    f"tensor_parallel_size={self.tensor_parallel_size} to "
+                    f"divide {num_gpus} GPUs; set usp explicitly")
+            self.usp = num_gpus // self.tensor_parallel_size
         if self.text_encoder_tp_size is None:
             self.text_encoder_tp_size = num_gpus
         if self.vae_patch_parallel_size is None:
@@ -174,7 +185,7 @@ class DeployConfig:
             port=env("PORT", 9000, int),
             cuda_visible_devices=env("CUDA_VISIBLE_DEVICES", "0,1,2,3"),
             tensor_parallel_size=env("TENSOR_PARALLEL_SIZE", 4, int),
-            usp=env("USP", 1, int),
+            usp=env("USP", None, int),
             ring=env("RING", 1, int),
             text_encoder_tp_size=env("TEXT_ENCODER_TP_SIZE", None, int),
             vae_patch_parallel_size=env("VAE_PATCH_PARALLEL_SIZE", None, int),
