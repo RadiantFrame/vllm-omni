@@ -8,6 +8,7 @@
     "diffusion_attention_backend": "FLASH_ATTN",
     "quantization": "fp8",
     "enable_cpu_offload": false,
+    "cache_backend": "cache_dit",
     "cache_config": {
       "Fn_compute_blocks": 1,
       "Bn_compute_blocks": 0,
