@@ -29,9 +29,10 @@ Config knobs (env names = field names uppercased; defaults mirror 4rtx5090/deplo
   RING                       (1)
   TEXT_ENCODER_TP_SIZE       (= GPU count)
   VAE_PATCH_PARALLEL_SIZE    (= GPU count)
-  QUANTIZATION               "fp8" or "" to disable          (fp8)
-  ENABLE_CPU_OFFLOAD         1/0                             (1)
+  QUANTIZATION               "" (off) or "fp8"               ("")
+  ENABLE_CPU_OFFLOAD         1/0                             (0)
   DIFFUSION_ATTENTION_BACKEND                                 (CUDNN_ATTN)
+  CACHE_BACKEND    "" (off) or "cache_dit"                  ("")
   CACHE_CONFIG    JSON of cache-dit overrides merged over the defaults
                   (keys mirror vllm-omni's DiffusionCacheConfig), e.g.
                   '{"enable_taylorseer": true, "taylorseer_order": 2}'
@@ -129,8 +130,18 @@ class DeployConfig:
     vae_patch_parallel_size: int | None = None
     num_weight_load_threads: int = 8
     diffusion_attention_backend: str = "CUDNN_ATTN"
-    quantization: str = "fp8"           # "" disables the flag
-    enable_cpu_offload: bool = True
+    # "" (default) runs unquantized; "fp8" enables online fp8 (weight-only
+    # via Marlin on pre-Hopper GPUs). Off by default: quantization is a
+    # deliberate trade (memory/speed vs accuracy), not a silent default.
+    quantization: str = ""
+    # Off by default: CPU offload trades per-step PCIe traffic for GPU
+    # memory headroom — enable deliberately on memory-tight setups.
+    enable_cpu_offload: bool = False
+    # Cache acceleration: "" (default) = no caching (clean baseline),
+    # "cache_dit" enables it. Other backends (teacache, ...) are rejected
+    # until cache_config's key validation covers their knobs. Caching trades
+    # output fidelity for speed — opt in per profile like quantization.
+    cache_backend: str = ""
     # Cache-DiT knobs as ONE dict (passed through to --cache-config). Keys
     # mirror vllm-omni's DiffusionCacheConfig so run snapshots stay directly
     # comparable with the official definitions. Constructed/swept as a dict:
@@ -155,6 +166,11 @@ class DeployConfig:
         if self.vae_patch_parallel_size is None:
             self.vae_patch_parallel_size = num_gpus
         unknown = set(self.cache_config) - _CACHE_CONFIG_KEYS
+        if self.cache_backend not in ("", "cache_dit"):
+            raise ValueError(
+                f"cache_backend must be '' (off) or 'cache_dit'; got "
+                f"{self.cache_backend!r} (other backends land when "
+                f"cache_config key validation covers their knobs)")
         if unknown:
             raise ValueError(
                 f"cache_config has unknown key(s) {sorted(unknown)}; valid "
@@ -191,8 +207,9 @@ class DeployConfig:
             vae_patch_parallel_size=env("VAE_PATCH_PARALLEL_SIZE", None, int),
             num_weight_load_threads=env("NUM_WEIGHT_LOAD_THREADS", 8, int),
             diffusion_attention_backend=env("DIFFUSION_ATTENTION_BACKEND", "CUDNN_ATTN"),
-            quantization=env("QUANTIZATION", "fp8"),
-            enable_cpu_offload=env("ENABLE_CPU_OFFLOAD", "1") == "1",
+            quantization=env("QUANTIZATION", ""),
+            enable_cpu_offload=env("ENABLE_CPU_OFFLOAD", "0") == "1",
+            cache_backend=env("CACHE_BACKEND", ""),
             cache_config=cache_config,
             log_path=env("LOG", "logs/deploy.log"),
             pid_file=env("PID_FILE", "logs/deploy.pid"),
@@ -248,10 +265,14 @@ class DeployConfig:
             "--num-weight-load-threads", str(self.num_weight_load_threads),
             "--diffusion-compile-granularity", "regional",
             "--diffusion-attention-backend", self.diffusion_attention_backend,
-            "--cache-backend", "cache_dit",
-            "--cache-config", cache_config,
-            "--enable-cache-dit-summary",
         ]
+        # Cache acceleration is optional: "" disables it entirely (baseline
+        # runs); the only accepted backend today is cache_dit (validated in
+        # __post_init__), which also gets the per-step summary flag.
+        if self.cache_backend:
+            cmd += ["--cache-backend", self.cache_backend,
+                    "--cache-config", cache_config,
+                    "--enable-cache-dit-summary"]
         if self.quantization:
             cmd += ["--quantization", self.quantization]
         if self.enable_cpu_offload:
