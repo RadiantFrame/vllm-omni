@@ -33,8 +33,11 @@ sub-key varies). port/ports and log/pid plumbing are owned by the pipeline
 and cannot be swept.
 
 CLI:
-    python search.py [--dry-run] [--limit N]
+    python search.py [--config FILE] [--dry-run] [--limit N]
       env knobs: SEARCH_OUT (index JSONL, default logs/index.jsonl)
+      --config: pipeline config file (same schema as pipeline.py --config /
+      run snapshots; run_dir inside is ignored — every grid point gets its
+      own fresh timestamped run_dir).
 """
 
 from __future__ import annotations
@@ -54,6 +57,9 @@ from pipeline import Pipeline, PipelineConfig
 # names); anything else is a typo and would silently no-op in replace().
 _DEPLOY_FIELDS = {f.name for f in dataclasses.fields(DeployConfig)}
 _GENERATE_FIELDS = {f.name for f in dataclasses.fields(GenerateConfig)}
+# GenerateConfig fields __post_init__ recomputes from input_dir — sweeping
+# them would be silently discarded (same reason from_config strips them).
+_GENERATE_DERIVED = GenerateConfig.DERIVED_FIELDS
 _PIPELINE_OWNED = ("port", "ports", "log_path", "pid_file")
 
 
@@ -99,6 +105,10 @@ class SearchConfig:
                 raise ValueError(
                     f"grid axis {axis!r} is owned by the pipeline (per-run "
                     f"port/log plumbing); do not sweep it")
+            if root in _GENERATE_DERIVED:
+                raise ValueError(
+                    f"grid axis {axis!r} is a derived GenerateConfig field "
+                    f"(recomputed from input_dir); sweep input_dir instead")
 
     def points(self) -> list[dict]:
         """All grid points as {field: value} dicts (deploy+generate merged)."""
@@ -194,6 +204,10 @@ def point_name(point: dict) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--config", default=None, metavar="FILE",
+                        help="pipeline config file (same schema as "
+                             "pipeline.py --config); env knobs fill "
+                             "anything it omits")
     parser.add_argument("--dry-run", action="store_true",
                         help="list the runs that would execute and exit")
     parser.add_argument("--limit", type=int, default=None,
@@ -201,11 +215,16 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        # Same construction story as pipeline.py main(): --config layers a
+        # JSON file over the env-resolved PipelineConfig. A run_dir inside
+        # the file is harmless — expanded() re-derives a fresh timestamped
+        # run_dir for every grid point.
+        pipeline_base = (PipelineConfig.from_config(args.config)
+                         if args.config else PipelineConfig(
+                             deploy_base=DeployConfig.from_env(),
+                             generate_base=GenerateConfig.from_env()))
         cfg = SearchConfig(
-            pipeline_base=PipelineConfig(
-                deploy_base=DeployConfig.from_env(),
-                generate_base=GenerateConfig.from_env(),
-            ),
+            pipeline_base=pipeline_base,
             index_path=os.environ.get("SEARCH_OUT", "logs/index.jsonl"),
         )
         # CLI mode runs a single baseline run; to sweep axes, construct
