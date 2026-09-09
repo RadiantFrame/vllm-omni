@@ -57,8 +57,9 @@ from pipeline import Pipeline, PipelineConfig
 # names); anything else is a typo and would silently no-op in replace().
 _DEPLOY_FIELDS = {f.name for f in dataclasses.fields(DeployConfig)}
 _GENERATE_FIELDS = {f.name for f in dataclasses.fields(GenerateConfig)}
-# GenerateConfig fields __post_init__ recomputes from input_dir — sweeping
-# them would be silently discarded (same reason from_config strips them).
+# Fields the configs re-derive in __post_init__ — sweeping them would be
+# silently discarded (same reason the from_config() constructors strip them).
+_DEPLOY_DERIVED = DeployConfig.DERIVED_FIELDS
 _GENERATE_DERIVED = GenerateConfig.DERIVED_FIELDS
 _PIPELINE_OWNED = ("port", "ports", "log_path", "pid_file")
 
@@ -105,6 +106,11 @@ class SearchConfig:
                 raise ValueError(
                     f"grid axis {axis!r} is owned by the pipeline (per-run "
                     f"port/log plumbing); do not sweep it")
+            if root in _DEPLOY_DERIVED:
+                raise ValueError(
+                    f"grid axis {axis!r} is a derived DeployConfig field "
+                    f"(recomputed from devices/TP); sweep "
+                    f"tensor_parallel_size instead")
             if root in _GENERATE_DERIVED:
                 raise ValueError(
                     f"grid axis {axis!r} is a derived GenerateConfig field "
@@ -146,7 +152,10 @@ class SearchConfig:
         """(point, PipelineConfig) per grid point, each with a fresh run_dir.
 
         run_dir="" re-derives the timestamped directory via __post_init__,
-        so every point becomes an independent run under logs/.
+        so every point becomes an independent run under logs/. replace()
+        also re-derives the deploy parallel fields (usp / encoder TP / VAE
+        patch are init=False) — sweeping tensor_parallel_size moves them
+        automatically.
         """
         pairs = []
         for point in self.points():

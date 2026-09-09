@@ -25,13 +25,10 @@ Config knobs (env names = field names uppercased; defaults mirror 4rtx5090/deplo
   PORT                       service port                    (9000)
   CUDA_VISIBLE_DEVICES       gpu list                        (0,1,2,3)
   TENSOR_PARALLEL_SIZE       (4)
-  USP                        (= GPU count / TP)
   RING                       (1)
-  TEXT_ENCODER_TP_SIZE       (= GPU count)
-  VAE_PATCH_PARALLEL_SIZE    (= GPU count)
   QUANTIZATION               "" (off) or "fp8"               ("")
   ENABLE_CPU_OFFLOAD         1/0                             (0)
-  DIFFUSION_ATTENTION_BACKEND                                 (CUDNN_ATTN)
+  DIFFUSION_ATTENTION_BACKEND                                 (FLASH_ATTN)
   CACHE_BACKEND    "" (off) or "cache_dit"                  ("")
   CACHE_CONFIG    JSON of cache-dit overrides merged over the defaults
                   (keys mirror vllm-omni's DiffusionCacheConfig), e.g.
@@ -117,19 +114,9 @@ class DeployConfig:
     port: int = 9000
     cuda_visible_devices: str = "0,1,2,3"
     tensor_parallel_size: int = 4
-    # None = auto: GPU count / tensor_parallel_size — the DiT parallel rule
-    # every bash profile follows (TP x USP = GPUs; 4rtx5090: 4x1, 4h800:
-    # 1x4, 8rtx5090: 4x2). Explicit values win; auto requires TP | GPUs.
-    usp: int | None = None
     ring: int = 1
-    # None = auto: full device width (len(cuda_visible_devices)). Every bash
-    # deploy profile sets both to the GPU count — text encoder sharded across
-    # all cards, VAE patch/tile-parallel across all cards — so the non-DiT
-    # stages never bottleneck and leave DiT weight headroom per card.
-    text_encoder_tp_size: int | None = None
-    vae_patch_parallel_size: int | None = None
     num_weight_load_threads: int = 8
-    diffusion_attention_backend: str = "CUDNN_ATTN"
+    diffusion_attention_backend: str = "FLASH_ATTN"
     # "" (default) runs unquantized; "fp8" enables online fp8 (weight-only
     # via Marlin on pre-Hopper GPUs). Off by default: quantization is a
     # deliberate trade (memory/speed vs accuracy), not a silent default.
@@ -152,19 +139,31 @@ class DeployConfig:
     pid_file: str = "logs/deploy.pid"   # written on --detach, read by --stop
     health_timeout_min: int = 15
 
+    # Pure derived values (init=False): re-computed by __post_init__ from the
+    # device list + TP on EVERY construction, so replace()/grid sweeps that
+    # move the inputs always re-derive — no frozen-value staleness, and no
+    # way to configure them (sweep tensor_parallel_size instead). Snapshots
+    # still record them (informational); from_config strips them on replay.
+    DERIVED_FIELDS = frozenset({"usp", "text_encoder_tp_size",
+                                "vae_patch_parallel_size"})
+    # usp = GPUs / TP — the DiT parallel rule every bash profile follows
+    # (TP x USP = GPUs; 4rtx5090: 4x1, 4h800: 1x4, 8rtx5090: 4x2).
+    usp: int = field(init=False)
+    # encoder TP / VAE patch = full device width (every bash profile) —
+    # non-DiT stages never bottleneck and leave DiT weight headroom per card.
+    text_encoder_tp_size: int = field(init=False)
+    vae_patch_parallel_size: int = field(init=False)
+
     def __post_init__(self) -> None:
         num_gpus = len(self.cuda_visible_devices.split(","))
-        if self.usp is None:
-            if num_gpus % self.tensor_parallel_size:
-                raise ValueError(
-                    f"usp auto (= GPU count / tensor_parallel_size) needs "
-                    f"tensor_parallel_size={self.tensor_parallel_size} to "
-                    f"divide {num_gpus} GPUs; set usp explicitly")
-            self.usp = num_gpus // self.tensor_parallel_size
-        if self.text_encoder_tp_size is None:
-            self.text_encoder_tp_size = num_gpus
-        if self.vae_patch_parallel_size is None:
-            self.vae_patch_parallel_size = num_gpus
+        if num_gpus % self.tensor_parallel_size:
+            raise ValueError(
+                f"usp (= GPU count / tensor_parallel_size) needs "
+                f"tensor_parallel_size={self.tensor_parallel_size} to "
+                f"divide {num_gpus} GPUs; adjust tensor_parallel_size")
+        self.usp = num_gpus // self.tensor_parallel_size
+        self.text_encoder_tp_size = num_gpus
+        self.vae_patch_parallel_size = num_gpus
         unknown = set(self.cache_config) - _CACHE_CONFIG_KEYS
         if self.cache_backend not in ("", "cache_dit"):
             raise ValueError(
@@ -176,6 +175,15 @@ class DeployConfig:
                 f"cache_config has unknown key(s) {sorted(unknown)}; valid "
                 f"keys are the official DiffusionCacheConfig names: "
                 f"{sorted(_CACHE_CONFIG_KEYS)}")
+        # Invariant: cache_config is non-empty iff a cache backend is on.
+        # With caching off the dict is emptied so snapshots/config files
+        # record reality (default placeholders would read as effective).
+        if not self.cache_backend and self.cache_config:
+            if self.cache_config != DEFAULT_CACHE_CONFIG:
+                print("[deploy] WARNING: cache_config overrides dropped "
+                      "(cache_backend is off; nothing reaches the server)",
+                      file=sys.stderr)
+            self.cache_config = {}
 
     @classmethod
     def from_env(cls) -> "DeployConfig":
@@ -201,12 +209,9 @@ class DeployConfig:
             port=env("PORT", 9000, int),
             cuda_visible_devices=env("CUDA_VISIBLE_DEVICES", "0,1,2,3"),
             tensor_parallel_size=env("TENSOR_PARALLEL_SIZE", 4, int),
-            usp=env("USP", None, int),
             ring=env("RING", 1, int),
-            text_encoder_tp_size=env("TEXT_ENCODER_TP_SIZE", None, int),
-            vae_patch_parallel_size=env("VAE_PATCH_PARALLEL_SIZE", None, int),
             num_weight_load_threads=env("NUM_WEIGHT_LOAD_THREADS", 8, int),
-            diffusion_attention_backend=env("DIFFUSION_ATTENTION_BACKEND", "CUDNN_ATTN"),
+            diffusion_attention_backend=env("DIFFUSION_ATTENTION_BACKEND", "FLASH_ATTN"),
             quantization=env("QUANTIZATION", ""),
             enable_cpu_offload=env("ENABLE_CPU_OFFLOAD", "0") == "1",
             cache_backend=env("CACHE_BACKEND", ""),
@@ -224,11 +229,22 @@ class DeployConfig:
         the dict wins per key). Unknown keys are rejected so a typo fails
         loudly instead of silently no-op'ing. A partial cache_config dict
         MERGES over the resolved value (same semantics as CACHE_CONFIG).
+        Derived fields (DERIVED_FIELDS — usp / encoder TP / VAE patch, run
+        snapshots contain them) are stripped with a warning: they always
+        re-derive from the device list + TP; configure those instead.
         """
         cfg = cls.from_env()
         if not isinstance(overrides, dict):
             raise TypeError(f"deploy overrides must be a dict, got "
                             f"{type(overrides).__name__}")
+        derived = set(overrides) & cls.DERIVED_FIELDS
+        if derived:
+            print(f"[deploy] WARNING: ignoring derived key(s) {sorted(derived)} "
+                  f"from config — they re-derive from cuda_visible_devices/"
+                  f"tensor_parallel_size; configure those instead",
+                  file=sys.stderr)
+            overrides = {k: v for k, v in overrides.items()
+                         if k not in cls.DERIVED_FIELDS}
         unknown = set(overrides) - {f.name for f in dataclasses.fields(cfg)}
         if unknown:
             raise ValueError(f"deploy config has unknown key(s) "
@@ -240,7 +256,8 @@ class DeployConfig:
             merged = dict(cfg.cache_config)
             merged.update(overrides["cache_config"])
             kw["cache_config"] = merged
-        # replace() re-runs __post_init__, re-validating cache_config keys.
+        # replace() re-runs __post_init__: re-validates cache_config keys
+        # AND re-derives the parallel fields against the overridden inputs.
         return dataclasses.replace(cfg, **kw)
 
     def build_cmd(self) -> list[str]:
@@ -269,6 +286,8 @@ class DeployConfig:
         # Cache acceleration is optional: "" disables it entirely (baseline
         # runs); the only accepted backend today is cache_dit (validated in
         # __post_init__), which also gets the per-step summary flag.
+        # __post_init__ keeps the invariant that cache_config is empty when
+        # caching is off, so there is nothing to warn about here.
         if self.cache_backend:
             cmd += ["--cache-backend", self.cache_backend,
                     "--cache-config", cache_config,
