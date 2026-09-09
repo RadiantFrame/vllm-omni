@@ -102,7 +102,12 @@ class PipelineConfig:
     deploy_base: DeployConfig = dataclasses.field(default_factory=DeployConfig)
     generate_base: GenerateConfig = dataclasses.field(
         default_factory=GenerateConfig)
-    run_dir: str = ""    # derived: logs/<YYYYmmdd-HHMMSS> unless set
+    # None = not issued yet: the timestamped directory is claimed lazily by
+    # ensure_run_dir() (Pipeline.run() calls it), so merely CONSTRUCTING a
+    # config never burns a logs/<timestamp> name — search's base and its
+    # pre-expanded grid points stay None until each run actually starts.
+    # A non-empty string pins the directory (config file "run_dir" / --run-dir).
+    run_dir: str | None = None
     warmup: int = 2      # leading requests Metrics drops from the log
 
     @classmethod
@@ -138,14 +143,26 @@ class PipelineConfig:
         return cfg
 
     def __post_init__(self) -> None:
-        if not self.run_dir:
+        if self.run_dir == "":      # normalize legacy "derive now" to lazy
+            self.run_dir = None
+
+    def ensure_run_dir(self) -> str:
+        """Claim the timestamped directory (idempotent) and return it."""
+        if self.run_dir is None:
             self.run_dir = _new_run_dir(LOGS_ROOT)
+        return self.run_dir
+
+    def _need_run_dir(self) -> str:
+        if self.run_dir is None:
+            raise RuntimeError("run_dir not issued yet; ensure_run_dir() "
+                               "first (Pipeline.run() does this)")
+        return self.run_dir
 
     def deploy_cfg(self) -> DeployConfig:
         """deploy_base with the service log inside run_dir."""
         return dataclasses.replace(
             self.deploy_base,
-            log_path=os.path.join(self.run_dir, "deploy.log"),
+            log_path=os.path.join(self._need_run_dir(), "deploy.log"),
         )
 
     def generate_cfg(self, port: int) -> GenerateConfig:
@@ -157,7 +174,7 @@ class PipelineConfig:
         """
         return dataclasses.replace(
             self.generate_base, ports=[port],
-            out_dir=os.path.join(self.run_dir, "outputs"))
+            out_dir=os.path.join(self._need_run_dir(), "outputs"))
 
     def snapshot(self) -> dict:
         """Effective-config snapshot for run_dir/config.json.
@@ -202,11 +219,12 @@ class Pipeline:
         {run_dir, ok, client_ok, client_elapsed_s, metrics}.
         """
         cfg = self.cfg
-        os.makedirs(cfg.run_dir, exist_ok=True)
-        with open(os.path.join(cfg.run_dir, "config.json"), "w") as fh:
+        run_dir = cfg.ensure_run_dir()     # lazily claim logs/<timestamp>
+        os.makedirs(run_dir, exist_ok=True)
+        with open(os.path.join(run_dir, "config.json"), "w") as fh:
             json.dump(cfg.snapshot(), fh, indent=2)
 
-        self.row = {"run_dir": cfg.run_dir,
+        self.row = {"run_dir": run_dir,
                     "started": time.strftime("%Y-%m-%d %H:%M:%S")}
         deploy_cfg = cfg.deploy_cfg()
         try:
@@ -226,7 +244,7 @@ class Pipeline:
             self.row["error"] = f"{type(exc).__name__}: {exc}"
             self.row["metrics"] = {"failures": 1}
 
-        with open(os.path.join(cfg.run_dir, "metrics.json"), "w") as fh:
+        with open(os.path.join(run_dir, "metrics.json"), "w") as fh:
             json.dump(self.row, fh, indent=2)
         return self.row
 
