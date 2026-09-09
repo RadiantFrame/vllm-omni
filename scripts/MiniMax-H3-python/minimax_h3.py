@@ -193,10 +193,20 @@ class ContextIRClient:
     def run(self, ir_file: str | None = None) -> dict:
         """Submit + wait; returns the terminal response dict.
 
-        On success, saves the enhanced prompt (task.content.prompt) to
+        Prints the run time: local wall clock (submit -> terminal, so up
+        to one poll interval longer than the task itself) plus the
+        server-side created_at -> updated_at span when present. On
+        success, saves the enhanced prompt (task.content.prompt) to
         ir_file, defaulting to prompt_ir.txt next to cfg.prompt_file.
         """
+        start = time.monotonic()
         result = self.wait(self.submit())
+        elapsed = time.monotonic() - start
+        msg = f"[h3-ir] run time: {elapsed:.1f}s (submit -> terminal)"
+        server = _task_duration(result)
+        if server is not None:
+            msg += f"; {server}s server-side (created_at -> updated_at)"
+        print(msg)
         if _task_status(result) not in TERMINAL_OK:
             return result
         path = ir_file or os.path.join(
@@ -239,6 +249,17 @@ def _enhanced_prompt(body) -> str:
     if isinstance(content, dict):
         return str(content.get("prompt", "") or "")
     return ""
+
+
+def _task_duration(body) -> int | None:
+    """task.updated_at - task.created_at (unix seconds), None when absent."""
+    task = body.get("task") if isinstance(body, dict) else None
+    if not isinstance(task, dict):
+        return None
+    try:
+        return int(task["updated_at"]) - int(task["created_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def main() -> int:
