@@ -3,7 +3,9 @@
     "model": "/data/models/modelscope/MiniMax/MiniMax-H3/Ref2VA",
     "cuda_visible_devices": "0,1,2,3",
     "tensor_parallel_size": 1,
+    "diffusion_attention_backend": "FLASH_ATTN",
     "quantization": "fp8",
+    "enable_cpu_offload": false,
     "cache_backend": "cache_dit",
     "cache_config": {
       "Fn_compute_blocks": 1,
