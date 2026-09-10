@@ -9,9 +9,10 @@ enhanced prompt / context IR lives in task.content.prompt, ready to feed
 the follow-up video-generation call.
 
 Usage:
-    MINIMAX_API_KEY=... python minimax_h3.py [--task-type TYPE]
-                                            [--input-dir DIR]
-                                            [--ir-file FILE]
+    MINIMAX_API_KEY=... python h3_context_ir.py [--task-type TYPE]
+                                               [--input-dir DIR]
+                                               [--ir-file FILE]
+                                               [--duration S] [--ratio W:H]
 
 Three request modes (TASK_TYPE / --task-type), mirroring the API's content
 combinations. Inputs come from INPUT_DIR (same convention as generate.py):
@@ -60,12 +61,12 @@ from __future__ import annotations
 
 import argparse
 import base64
-import dataclasses
 import json
 import os
 import sys
 import time
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
 import requests
 
@@ -124,23 +125,6 @@ class ContextIRConfig:
     # Per-mode reference caps (enforced server-side by the API; checked
     # here for a clearer client-side error).
     REF_LIMITS = {"r2va": {"image": 9, "video": 3, "audio": 3}}
-
-    @classmethod
-    def from_env(cls) -> "ContextIRConfig":
-        def env(name: str, default, cast=str):
-            raw = os.environ.get(name, "")
-            return cast(raw) if raw else default
-
-        return cls(
-            api_base=env("API_BASE", "https://api.minimax.cn"),
-            api_key=env("MINIMAX_API_KEY", ""),
-            task_type=env("TASK_TYPE", "i2va"),
-            input_dir=env("INPUT_DIR", ""),
-            duration=env("DURATION", 5, int),
-            ratio=env("RATIO", ""),
-            poll_interval_s=env("POLL_INTERVAL_S", 5.0, float),
-            poll_timeout_s=env("POLL_TIMEOUT_S", 900.0, float),
-        )
 
     def __post_init__(self) -> None:
         if not self.api_key:
@@ -412,23 +396,38 @@ def main() -> int:
                         help="case directory holding prompt.txt + mode-"
                              "dependent reference files (default: env "
                              "INPUT_DIR, or inputs/<task_type>)")
+    parser.add_argument("--duration", type=int, default=None, metavar="S",
+                        help="target video seconds, 4-15 (default: env "
+                             "DURATION, or 5)")
+    parser.add_argument("--ratio", default=None, metavar="W:H",
+                        help="target aspect ratio (default: env RATIO, or "
+                             "task-aware: 16:9 for t2va, adaptive otherwise)")
     parser.add_argument("--ir-file", default=None, metavar="FILE",
                         help="where to save the enhanced prompt on success "
                              "(default: prompt_ir.txt next to the input "
                              "prompt.txt)")
     args = parser.parse_args()
 
+    def env(name: str, default: Any, cast: Callable[[str], Any] = str) -> Any:
+        raw = os.environ.get(name, "")
+        return cast(raw) if raw else default
+
     try:
-        cfg = ContextIRConfig.from_env()
-        if args.task_type:
-            # Keep an explicit INPUT_DIR (env or CLI); otherwise re-derive
-            # the task-aware default from the new task_type.
-            cfg = dataclasses.replace(
-                cfg, task_type=args.task_type,
-                input_dir=args.input_dir or os.environ.get("INPUT_DIR", ""))
-        elif args.input_dir:
-            # replace() re-runs __post_init__, re-deriving prompt/refs.
-            cfg = dataclasses.replace(cfg, input_dir=args.input_dir)
+        # CLI > env > task-aware default: absent flags fall back to their
+        # env twins; an empty input_dir/ratio then derives from task_type
+        # in __post_init__ — one construction, so validation only ever
+        # sees the final values.
+        cfg = ContextIRConfig(
+            api_base=env("API_BASE", "https://api.minimax.cn"),
+            api_key=env("MINIMAX_API_KEY", ""),
+            task_type=args.task_type or env("TASK_TYPE", "i2va"),
+            input_dir=args.input_dir or env("INPUT_DIR", ""),
+            duration=args.duration if args.duration is not None
+                     else env("DURATION", 5, int),
+            ratio=args.ratio or env("RATIO", ""),
+            poll_interval_s=env("POLL_INTERVAL_S", 5.0, float),
+            poll_timeout_s=env("POLL_TIMEOUT_S", 900.0, float),
+        )
     except (ValueError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
