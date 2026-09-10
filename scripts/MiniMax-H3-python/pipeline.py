@@ -48,6 +48,7 @@ import argparse
 import dataclasses
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -205,6 +206,29 @@ class PipelineConfig:
         }
 
 
+def _install_exit_signals() -> None:
+    """SIGTERM/SIGHUP -> SystemExit so the Deployer context unwinds.
+
+    Plain termination would leak the deployment: the service runs in its
+    own session (immune to HUP) and only Deployer.__exit__ stops it.
+    Ctrl+C needs no handler — it arrives as KeyboardInterrupt, which
+    Generator re-raises after abandoning in-flight requests.
+    """
+    def _raise(signum, _frame):
+        sys.exit(128 + signum)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _raise)
+        except (OSError, ValueError):    # not the main thread
+            pass
+
+
+def _exit_code(exc: BaseException) -> int:
+    """Process exit code for an interrupt (SystemExit carries 128+sig)."""
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, int) and 0 < code < 256 else 130
+
+
 class Pipeline:
     """Runs one trial; records its artifacts under cfg.run_dir."""
 
@@ -217,7 +241,14 @@ class Pipeline:
 
         Returns the metrics row (also written to run_dir/metrics.json):
         {run_dir, ok, client_ok, client_elapsed_s, metrics}.
+
+        Interrupt safety: Ctrl+C (KeyboardInterrupt) or TERM/HUP
+        (SystemExit) unwinds the Deployer context — the service is
+        gracefully stopped, the partial row is written — then the
+        process hard-exits, because in-flight request threads cannot be
+        cancelled and would otherwise block interpreter exit.
         """
+        _install_exit_signals()
         cfg = self.cfg
         run_dir = cfg.ensure_run_dir()     # lazily claim logs/<timestamp>
         os.makedirs(run_dir, exist_ok=True)
@@ -227,6 +258,7 @@ class Pipeline:
         self.row = {"run_dir": run_dir,
                     "started": time.strftime("%Y-%m-%d %H:%M:%S")}
         deploy_cfg = cfg.deploy_cfg()
+        interrupt: BaseException | None = None
         try:
             with Deployer(deploy_cfg) as deployer:
                 gen = Generator(cfg.generate_cfg(deployer.port))
@@ -239,6 +271,11 @@ class Pipeline:
                 deploy_cfg.log_path)
             self.row["ok"] = bool(traffic_ok
                                   and not self.row["metrics"]["failures"])
+        except (KeyboardInterrupt, SystemExit) as exc:
+            interrupt = exc
+            self.row["ok"] = False
+            self.row["error"] = f"{type(exc).__name__}: run interrupted"
+            self.row["metrics"] = {"failures": 1}
         except Exception as exc:  # deployment failure or metrics crash
             self.row["ok"] = False
             self.row["error"] = f"{type(exc).__name__}: {exc}"
@@ -246,6 +283,13 @@ class Pipeline:
 
         with open(os.path.join(run_dir, "metrics.json"), "w") as fh:
             json.dump(self.row, fh, indent=2)
+        if interrupt is not None:
+            # Service stopped, run dir complete. In-flight request threads
+            # (uncancellable, up to REQUEST_TIMEOUT) would block the
+            # interpreter's exit hook — leave now.
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(_exit_code(interrupt))
         return self.row
 
 

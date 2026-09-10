@@ -58,6 +58,7 @@ import dataclasses
 import mimetypes
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -378,7 +379,8 @@ class Generator:
               f"(concurrent fan-out per round)...\n")
 
         fail = False
-        with ThreadPoolExecutor(max_workers=len(cfg.ports)) as pool:
+        pool = ThreadPoolExecutor(max_workers=len(cfg.ports))
+        try:
             for rnd in range(1, cfg.rounds + 1):
                 print(f"=== Round {rnd}/{cfg.rounds} ===")
                 jobs = []
@@ -408,6 +410,21 @@ class Generator:
                               f"error={res['error']}")
                         fail = True
                 print()
+        except (KeyboardInterrupt, SystemExit):
+            # A Ctrl+C must not hang the run: the executor's exit hook joins
+            # worker threads at interpreter shutdown, and one in-flight
+            # request can hold the process for its full read timeout
+            # (REQUEST_TIMEOUT, up to 4500s). Cancel what hasn't started,
+            # skip the join, and re-raise so the pipeline stops the service
+            # and hard-exits. SIGINT is shielded first: a second Ctrl+C
+            # during the service's TERM->KILL cleanup would abort it.
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            pool.shutdown(wait=False, cancel_futures=True)
+            print("\n[generate.py] interrupted — abandoning in-flight "
+                  "request(s); the pipeline will stop the service",
+                  file=sys.stderr)
+            raise
+        pool.shutdown(wait=True)
 
         if fail:
             print("Some requests FAILED.")
