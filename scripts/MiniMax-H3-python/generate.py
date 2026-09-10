@@ -36,9 +36,13 @@ Env knobs (defaults match the bash version unless noted):
                  fl2va: 0-2 reference frame images, default <repo>/inputs/i2va.
                  ref2va: mixed images/videos/audios (<=9 img, <=3 vid, <=3 aud,
                  <=12 total), default <repo>/inputs/r2va.
+  USE_IR_PROMPT  generate from prompt_ir.txt (the H3-Context-IR enhanced
+                 prompt, see minimax_h3.py) instead of prompt.txt (false)
   REQUEST_TIMEOUT  per-request read timeout, seconds         (1800)
 
 Notes:
+- prompt_ir.txt (minimax_h3.py's output artifact) is never uploaded as a
+  reference; USE_IR_PROMPT only switches which file the prompt comes from.
 - The request is multipart form -> POST http://HOST:PORT/v1/videos/sync,
   exactly mirroring the curl -F fields of the bash clients: fl2va repeats
   "input_reference" image fields; ref2va repeats "input_references" fields
@@ -90,6 +94,7 @@ class GenerateConfig:
     width: int = 832
     height: int = 480
     input_dir: str = os.path.join(REPO_ROOT, "inputs", "i2va")
+    use_ir_prompt: bool = False
     request_timeout: float = 4500.0
 
     # Derived in __post_init__.
@@ -123,6 +128,9 @@ class GenerateConfig:
             input_dir=env("INPUT_DIR", os.path.join(
                 REPO_ROOT, "inputs", "r2va" if task_type == "ref2va"
                 else "i2va")),
+            use_ir_prompt=env("USE_IR_PROMPT", False,
+                              lambda v: v.strip().lower()
+                              in ("1", "true", "yes", "on")),
             request_timeout=env("REQUEST_TIMEOUT", 4500.0, float),
         )
 
@@ -165,11 +173,17 @@ class GenerateConfig:
         if not self.ports:
             self.ports = [self.port_base + i for i in range(self.num_services)]
         # The ONLY input knob is INPUT_DIR: prompt.txt plus 0-2 reference
-        # frame images (sorted filename order = upload order).
-        self.prompt_file = os.path.join(self.input_dir, "prompt.txt")
+        # frame images (sorted filename order = upload order). With
+        # use_ir_prompt, the prompt comes from the H3-Context-IR enhanced
+        # prompt_ir.txt instead (produced by minimax_h3.py on this dir).
+        self.prompt_file = os.path.join(
+            self.input_dir,
+            "prompt_ir.txt" if self.use_ir_prompt else "prompt.txt")
         if not os.path.isfile(self.prompt_file):
-            raise FileNotFoundError(
-                f"{self.prompt_file} not found (check INPUT_DIR)")
+            hint = (" — run minimax_h3.py on this INPUT_DIR first to "
+                    "produce the enhanced prompt"
+                    if self.use_ir_prompt else " (check INPUT_DIR)")
+            raise FileNotFoundError(f"{self.prompt_file} not found{hint}")
         with open(self.prompt_file, encoding="utf-8") as fh:
             self.prompt = fh.read()
         try:
@@ -177,7 +191,7 @@ class GenerateConfig:
         except OSError as exc:
             raise OSError(f"cannot read INPUT_DIR {self.input_dir}: {exc}") from exc
         self.ref_files = [os.path.join(self.input_dir, n) for n in names
-                          if n != "prompt.txt" and not n.startswith("README")]
+                          if n not in ("prompt.txt", "prompt_ir.txt") and not n.startswith("README")]
         self._validate_refs()
 
     # Ref2VA contract (enforced server-side, checked here for a clearer
