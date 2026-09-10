@@ -149,7 +149,7 @@ class ContextIRConfig:
             raise ValueError(f"TASK_TYPE must be one of {sorted(TASK_TYPES)}, "
                              f"got '{self.task_type}'")
         if not self.input_dir:
-            self.input_dir = os.path.join(REPO_ROOT, "inputs", f"{self.task_type}-ir")
+            self.input_dir = os.path.join(REPO_ROOT, "inputs", self.task_type)
         if not self.ratio:
             self.ratio = "16:9" if self.task_type == "t2va" else "adaptive"
         self._validate_request_params()
