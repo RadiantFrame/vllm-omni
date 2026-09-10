@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Grid search over the single-trial pipeline (pipeline.py).
+"""Experiment search over the single-trial pipeline (pipeline.py).
 
-A search is just MANY runs: each grid point goes through Pipeline as its own
+A search is just MANY runs: each point goes through Pipeline as its own
 timestamped run directory under logs/ (config.json / deploy.log /
 metrics.json / outputs/ — see pipeline.py). This module only expands the
-grid, drives the loop, and maintains a flat JSONL index pointing at the run
-directories (append-per-trial, so an interrupted search keeps partial
+points, drives the loop, and maintains a flat JSONL index pointing at the
+run directories (append-per-trial, so an interrupted search keeps partial
 results). The index is a derived cache: every run stays self-describing via
 its config.json/metrics.json, so it can be rebuilt or ignored.
 
@@ -19,32 +19,41 @@ its config.json/metrics.json, so it can be rebuilt or ignored.
             deploy_base=DeployConfig(cuda_visible_devices="4,5,6,7"),
             generate_base=GenerateConfig(duration=15),
         ),
-        grid={
-            "usp": [1, 2],
-            "cache_config.residual_diff_threshold": [0.04, 0.06],
-        },
+        points=[
+            {"tensor_parallel_size": 1},
+            {"tensor_parallel_size": 2},
+            {"tensor_parallel_size": 4, "quantization": "fp8"},
+            {"cache_config.residual_diff_threshold": 0.06},
+        ],
     )
-    results = Search(cfg).run()          # one Pipeline run per grid point
+    results = Search(cfg).run()          # one Pipeline run per point
 
-Grid axes are dispatched by field name (deploy fields -> DeployConfig,
-generate fields -> GenerateConfig), so a parameter is never declared twice;
-dict fields are swept via dotted paths that deep-merge (only the named
+Each point is ONE experiment: a {field: value} override dict applied over
+pipeline_base (deploy and generate fields merged in one dict). Point keys
+are dispatched by field name (deploy fields -> DeployConfig, generate
+fields -> GenerateConfig), so a parameter is never declared twice; dict
+fields are overridden via dotted paths that deep-merge (only the named
 sub-key varies). port/ports and log/pid plumbing are owned by the pipeline
-and cannot be swept.
+and cannot be overridden.
+
+An explicit point list rather than a cartesian grid: real sweeps are
+rarely full products — e.g. fp8 quantization, once it works, stays on in
+every other experiment and is never multiplied into the remaining axes.
+When you do want a product, expand it with itertools.product while
+building the list.
 
 CLI:
     python search.py [--config FILE] [--dry-run] [--limit N]
       env knobs: SEARCH_OUT (index JSONL, default logs/index.jsonl)
       --config: pipeline config file (same schema as pipeline.py --config /
-      run snapshots; run_dir inside is ignored — every grid point gets its
-      own fresh timestamped run_dir).
+      run snapshots; run_dir inside is ignored — every point gets its own
+      fresh timestamped run_dir).
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
-import itertools
 import json
 import os
 import sys
@@ -64,9 +73,9 @@ _GENERATE_DERIVED = GenerateConfig.DERIVED_FIELDS
 _PIPELINE_OWNED = ("port", "ports", "log_path", "pid_file")
 
 
-def _axis_root(axis: str) -> str:
-    """Top-level field name of an axis ("a.b" -> "a")."""
-    return axis.split(".", 1)[0]
+def _key_root(key: str) -> str:
+    """Top-level field name of an override key ("a.b" -> "a")."""
+    return key.split(".", 1)[0]
 
 
 def _deep_set(base: dict, dotted_key: str, value) -> dict:
@@ -83,46 +92,47 @@ def _deep_set(base: dict, dotted_key: str, value) -> dict:
 
 @dataclasses.dataclass
 class SearchConfig:
-    """One search: a shared PipelineConfig base + the axes that vary.
+    """One search: a shared PipelineConfig base + the experiment list.
 
-    Axes are field names; nested dict fields (e.g. DeployConfig.cache_config)
-    are swept via dotted paths: "cache_config.residual_diff_threshold".
-    Dotted overrides deep-merge, so the rest of the dict keeps base values.
+    Each point is one experiment: a {field: value} override dict applied
+    over pipeline_base (deploy and generate fields merged in one dict).
+    Nested dict fields (e.g. DeployConfig.cache_config) are overridden via
+    dotted paths ("cache_config.residual_diff_threshold") that deep-merge,
+    so the rest of the dict keeps base values. An empty list means a
+    single baseline run.
     """
 
     pipeline_base: PipelineConfig = dataclasses.field(
         default_factory=PipelineConfig)
-    grid: dict[str, list] = dataclasses.field(default_factory=dict)
+    points: list[dict] = dataclasses.field(default_factory=list)
     index_path: str = "logs/index.jsonl"
 
     def __post_init__(self) -> None:
-        for axis in self.grid:
-            root = _axis_root(axis)
-            if root not in _DEPLOY_FIELDS and root not in _GENERATE_FIELDS:
-                raise ValueError(
-                    f"grid axis {axis!r} is neither a DeployConfig nor a "
-                    f"GenerateConfig field")
-            if root in _PIPELINE_OWNED:
-                raise ValueError(
-                    f"grid axis {axis!r} is owned by the pipeline (per-run "
-                    f"port/log plumbing); do not sweep it")
-            if root in _DEPLOY_DERIVED:
-                raise ValueError(
-                    f"grid axis {axis!r} is a derived DeployConfig field "
-                    f"(recomputed from devices/TP); sweep "
-                    f"tensor_parallel_size instead")
-            if root in _GENERATE_DERIVED:
-                raise ValueError(
-                    f"grid axis {axis!r} is a derived GenerateConfig field "
-                    f"(recomputed from input_dir); sweep input_dir instead")
-
-    def points(self) -> list[dict]:
-        """All grid points as {field: value} dicts (deploy+generate merged)."""
-        if not self.grid:
-            return [{}]
-        keys = list(self.grid)
-        return [dict(zip(keys, combo))
-                for combo in itertools.product(*(self.grid[k] for k in keys))]
+        for i, point in enumerate(self.points):
+            where = f"points[{i}]"
+            if not isinstance(point, dict):
+                raise TypeError(f"{where} must be a dict of overrides, got "
+                                f"{type(point).__name__}")
+            for key in point:
+                root = _key_root(key)
+                if root not in _DEPLOY_FIELDS and root not in _GENERATE_FIELDS:
+                    raise ValueError(
+                        f"{where} key {key!r} is neither a DeployConfig nor "
+                        f"a GenerateConfig field")
+                if root in _PIPELINE_OWNED:
+                    raise ValueError(
+                        f"{where} key {key!r} is owned by the pipeline "
+                        f"(per-run port/log plumbing); do not override it")
+                if root in _DEPLOY_DERIVED:
+                    raise ValueError(
+                        f"{where} key {key!r} is a derived DeployConfig "
+                        f"field (recomputed from devices/TP); set "
+                        f"tensor_parallel_size instead")
+                if root in _GENERATE_DERIVED:
+                    raise ValueError(
+                        f"{where} key {key!r} is a derived GenerateConfig "
+                        f"field (recomputed from input_dir); set input_dir "
+                        f"instead")
 
     def _overrides(self, point: dict, base, fields: set[str]) -> dict:
         """Constructor overrides for one config class from a merged point.
@@ -132,7 +142,7 @@ class SearchConfig:
         """
         overrides, dotted = {}, []
         for key, value in point.items():
-            if _axis_root(key) not in fields:
+            if _key_root(key) not in fields:
                 continue
             if "." in key:
                 dotted.append((key, value))
@@ -143,23 +153,24 @@ class SearchConfig:
             current = overrides.get(top, getattr(base, top))
             if not isinstance(current, dict):
                 raise ValueError(
-                    f"grid axis {top!r} is not a dict field; dotted paths "
+                    f"point key {top!r} is not a dict field; dotted paths "
                     f"only apply to dict fields like cache_config")
             overrides[top] = _deep_set(current, key.split(".", 1)[1], value)
         return overrides
 
     def expanded(self) -> list[tuple[dict, PipelineConfig]]:
-        """(point, PipelineConfig) per grid point, each with a fresh run_dir.
+        """(point, PipelineConfig) per experiment, each with a fresh run_dir.
 
-        Points are built with run_dir=None (lazy): the timestamped directory
-        is claimed per point by Pipeline.run()/ensure_run_dir() when that
-        run actually starts, so expanding a grid never burns directory
-        names. replace() also re-derives the deploy parallel fields (usp /
-        encoder TP / VAE patch are init=False) — sweeping
+        An empty points list means one baseline run ([{}]). Configs are
+        built with run_dir=None (lazy): the timestamped directory is
+        claimed per point by Pipeline.run()/ensure_run_dir() when that
+        run actually starts, so expanding never burns directory names.
+        replace() also re-derives the deploy parallel fields (usp /
+        encoder TP / VAE patch are init=False) — a point overriding
         tensor_parallel_size moves them automatically.
         """
         pairs = []
-        for point in self.points():
+        for point in self.points or [{}]:
             pairs.append((point, dataclasses.replace(
                 self.pipeline_base, run_dir=None,
                 deploy_base=dataclasses.replace(
@@ -179,7 +190,7 @@ class SearchConfig:
 
 
 class Search:
-    """Drives one Pipeline run per grid point; appends to the flat index."""
+    """Drives one Pipeline run per point; appends to the flat index."""
 
     def __init__(self, cfg: SearchConfig):
         self.cfg = cfg
@@ -229,7 +240,7 @@ def main() -> int:
         # Same construction story as pipeline.py main(): --config layers a
         # JSON file over the env-resolved PipelineConfig. A run_dir inside
         # the file is harmless — expanded() re-derives a fresh timestamped
-        # run_dir for every grid point.
+        # run_dir for every point.
         pipeline_base = (PipelineConfig.from_config(args.config)
                          if args.config else PipelineConfig(
                              deploy_base=DeployConfig.from_env(),
@@ -237,10 +248,12 @@ def main() -> int:
         cfg = SearchConfig(
             pipeline_base=pipeline_base,
             index_path=os.environ.get("SEARCH_OUT", "logs/index.jsonl"),
+            # Experiments live here: each point is one run's overrides over
+            # pipeline_base, e.g. {"tensor_parallel_size": 2,
+            # "quantization": "fp8"} (dotted paths like cache_config.x
+            # deep-merge into dict fields). Empty = single baseline run.
+            points=[],
         )
-        # CLI mode runs a single baseline run; to sweep axes, construct
-        # SearchConfig in Python (see the module docstring) or add a grid
-        # here.
     except (OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
