@@ -1,6 +1,6 @@
 {
   "deploy": {
-    "model": "/data/models/modelscope/MiniMax/MiniMax-H3/Ref2VA",
+    "model": "/data/models/modelscope/MiniMax/MiniMax-H3/FL2VA",
     "cuda_visible_devices": "0,1,2,3",
     "tensor_parallel_size": 1,
     "quantization": "fp8",
@@ -24,11 +24,11 @@
   "generate": {
     "rounds": 5,
     "seed": "0",
-    "task_type": "ref2va",
-    "duration": 15,
+    "task_type": "fl2va",
+    "duration": 5,
     "width": 1344,
     "height": 768,
-    "input_dir": "/data/jw/workspace/vllm-omni/inputs/r2va-omni",
+    "input_dir": "/data/jw/workspace/vllm-omni/inputs/i2va",
     "use_ir_prompt": false
   },
   "warmup": 3
