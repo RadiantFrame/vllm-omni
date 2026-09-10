@@ -32,6 +32,11 @@ base64 data URLs.
 
 On success the enhanced prompt (task.content.prompt) is written to
 --ir-file, defaulting to prompt_ir.txt next to the input prompt.txt.
+Every terminal run also writes a trace JSON — the exact submit request
+(base64 data URLs elided to length markers) plus the terminal response —
+to --trace, defaulting to h3_context_ir.json in the same directory (one
+latest trace per case dir, overwritten each run); failure/cancelled
+runs are traced too.
 
 Env knobs (field names uppercased):
   MINIMAX_API_KEY     API bearer token                  (required)
@@ -162,12 +167,14 @@ class ContextIRConfig:
                 f"{self.prompt_file} not found (check INPUT_DIR)")
         with open(self.prompt_file, encoding="utf-8") as fh:
             self.prompt = fh.read()
-        # prompt_ir.txt is this client's own output artifact (written next
-        # to prompt.txt on success) — never a reference.
+        # prompt_ir.txt (enhanced prompt) and *.json (context_ir_* traces,
+        # custom --trace files) are this client's own output artifacts —
+        # never references. .json is not an accepted modality anyway.
         paths = [os.path.join(self.input_dir, n)
                  for n in sorted(os.listdir(self.input_dir))
                  if n not in ("prompt.txt", "prompt_ir.txt")
-                 and not n.startswith("README")]
+                 and not n.startswith("README")
+                 and os.path.splitext(n)[1].lower() != ".json"]
         kinds = [self._ref_kind(p) for p in paths]
         self._validate_refs(paths, kinds)
         self.refs = [
@@ -241,6 +248,7 @@ class ContextIRClient:
     def __init__(self, cfg: ContextIRConfig):
         self.cfg = cfg
         self.base = cfg.api_base.rstrip("/")
+        self.last_payload: dict = {}   # submit()'s request body (for trace)
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.cfg.api_key}"}
@@ -261,6 +269,7 @@ class ContextIRClient:
             "duration": cfg.duration,
             "ratio": cfg.ratio,
         }
+        self.last_payload = payload
         size = len(json.dumps(payload).encode("utf-8"))
         if size > MAX_BODY_BYTES:
             raise RuntimeError(
@@ -306,14 +315,18 @@ class ContextIRClient:
         raise TimeoutError(f"task {task_id} not terminal after "
                            f"{self.cfg.poll_timeout_s:g}s; last response: {last}")
 
-    def run(self, ir_file: str | None = None) -> dict:
+    def run(self, ir_file: str | None = None,
+            trace_file: str | None = None) -> dict:
         """Submit + wait; returns the terminal response dict.
 
         Prints the run time: local wall clock (submit -> terminal, so up
         to one poll interval longer than the task itself) plus the
-        server-side created_at -> updated_at span when present. On
-        success, saves the enhanced prompt (task.content.prompt) to
-        ir_file, defaulting to prompt_ir.txt next to cfg.prompt_file.
+        server-side created_at -> updated_at span when present. Always
+        writes a trace JSON ({"request": ..., "response": ...}; data URLs
+        elided) to trace_file, defaulting to h3_context_ir.json next to
+        cfg.prompt_file (overwritten each run). On success, additionally
+        saves the enhanced prompt (task.content.prompt) to ir_file,
+        defaulting to prompt_ir.txt next to cfg.prompt_file.
         """
         start = time.monotonic()
         result = self.wait(self.submit())
@@ -323,6 +336,7 @@ class ContextIRClient:
         if server is not None:
             msg += f"; {server}s server-side (created_at -> updated_at)"
         print(msg)
+        self._write_trace(result, trace_file)
         if _task_status(result) not in TERMINAL_OK:
             return result
         path = ir_file or os.path.join(
@@ -336,6 +350,21 @@ class ContextIRClient:
             fh.write(prompt)
         print(f"[h3-ir] enhanced prompt saved: {path} ({len(prompt)} chars)")
         return result
+
+    def _write_trace(self, result: dict, trace_file: str | None) -> None:
+        """Persist the submit request + terminal response as one JSON.
+
+        Written on failure/cancel too (a TimeoutError in wait() raises
+        past run(), so a timed-out run leaves no trace).
+        """
+        path = trace_file or os.path.join(
+            os.path.dirname(self.cfg.prompt_file) or ".",
+            "h3_context_ir.json")
+        doc = {"request": _elide_data_urls(self.last_payload),
+               "response": result}
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2, ensure_ascii=False)
+        print(f"[h3-ir] trace saved: {path}")
 
 
 def _json_or_text(resp: requests.Response):
@@ -386,6 +415,21 @@ def _data_url(path: str) -> str:
     return f"data:{mime};base64,{b64}"
 
 
+def _elide_data_urls(obj):
+    """Deep copy with inline base64 data URLs replaced by length markers.
+
+    The media itself lives in INPUT_DIR; eliding keeps the request trace
+    small and diffable.
+    """
+    if isinstance(obj, dict):
+        return {k: _elide_data_urls(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_elide_data_urls(v) for v in obj]
+    if isinstance(obj, str) and obj.startswith("data:") and len(obj) > 128:
+        return f"{obj[:48]}...<{len(obj)} chars, elided>"
+    return obj
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Submit one MiniMax H3-Context-IR task and wait for it.")
@@ -406,6 +450,10 @@ def main() -> int:
                         help="where to save the enhanced prompt on success "
                              "(default: prompt_ir.txt next to the input "
                              "prompt.txt)")
+    parser.add_argument("--trace", default=None, metavar="FILE",
+                        help="where to save the request+response trace JSON "
+                             "(default: h3_context_ir.json next to the "
+                             "input prompt.txt, overwritten each run)")
     args = parser.parse_args()
 
     def env(name: str, default: Any, cast: Callable[[str], Any] = str) -> Any:
@@ -433,7 +481,8 @@ def main() -> int:
         return 1
 
     try:
-        result = ContextIRClient(cfg).run(ir_file=args.ir_file)
+        result = ContextIRClient(cfg).run(ir_file=args.ir_file,
+                                          trace_file=args.trace)
     except (requests.RequestException, RuntimeError, TimeoutError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
