@@ -191,8 +191,13 @@ class GenerateConfig:
             names = sorted(os.listdir(self.input_dir))
         except OSError as exc:
             raise OSError(f"cannot read INPUT_DIR {self.input_dir}: {exc}") from exc
+        # prompt_ir.txt (IR-enhanced prompt) and *.json (h3_context_ir.py
+        # trace files) are never references; .json is not an accepted
+        # modality anyway.
         self.ref_files = [os.path.join(self.input_dir, n) for n in names
-                          if n not in ("prompt.txt", "prompt_ir.txt") and not n.startswith("README")]
+                          if n not in ("prompt.txt", "prompt_ir.txt")
+                          and not n.startswith("README")
+                          and os.path.splitext(n)[1].lower() != ".json"]
         self._validate_refs()
 
     # Ref2VA contract (enforced server-side, checked here for a clearer
