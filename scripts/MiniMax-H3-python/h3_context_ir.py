@@ -16,9 +16,9 @@ Usage:
 
 Three request modes (TASK_TYPE / --task-type), mirroring the API's content
 combinations. Inputs come from INPUT_DIR (same convention as generate.py):
-prompt.txt plus reference files, sorted filename order = upload order (the
-<Picture/Video N> numbering the prompt refers to); local files are sent as
-base64 data URLs.
+prompt.txt plus reference files under references/ (sorted filename order =
+upload order, the <Picture/Video N> numbering the prompt refers to; create
+it empty for text-only t2va). Local files are sent as base64 data URLs.
 
   t2va  text-only             no reference files; RATIO required and
                               non-adaptive (default 16:9); default
@@ -31,7 +31,8 @@ base64 data URLs.
                               adaptive); default INPUT_DIR <repo>/inputs/r2va
 
 On success the enhanced prompt (task.content.prompt) is written to
---ir-file, defaulting to prompt_ir.txt next to the input prompt.txt.
+--ir-file, defaulting to h3_context_ir_prompt.txt next to the input
+prompt.txt.
 Every terminal run also writes a trace JSON — the exact submit request
 (base64 data URLs elided to length markers) plus the terminal response —
 to --trace, defaulting to h3_context_ir.json in the same directory (one
@@ -167,14 +168,7 @@ class ContextIRConfig:
                 f"{self.prompt_file} not found (check INPUT_DIR)")
         with open(self.prompt_file, encoding="utf-8") as fh:
             self.prompt = fh.read()
-        # prompt_ir.txt (enhanced prompt) and *.json (context_ir_* traces,
-        # custom --trace files) are this client's own output artifacts —
-        # never references. .json is not an accepted modality anyway.
-        paths = [os.path.join(self.input_dir, n)
-                 for n in sorted(os.listdir(self.input_dir))
-                 if n not in ("prompt.txt", "prompt_ir.txt")
-                 and not n.startswith("README")
-                 and os.path.splitext(n)[1].lower() != ".json"]
+        paths = _reference_paths(self.input_dir)
         kinds = [self._ref_kind(p) for p in paths]
         self._validate_refs(paths, kinds)
         self.refs = [
@@ -326,7 +320,7 @@ class ContextIRClient:
         elided) to trace_file, defaulting to h3_context_ir.json next to
         cfg.prompt_file (overwritten each run). On success, additionally
         saves the enhanced prompt (task.content.prompt) to ir_file,
-        defaulting to prompt_ir.txt next to cfg.prompt_file.
+        defaulting to h3_context_ir_prompt.txt next to cfg.prompt_file.
         """
         start = time.monotonic()
         result = self.wait(self.submit())
@@ -340,7 +334,8 @@ class ContextIRClient:
         if _task_status(result) not in TERMINAL_OK:
             return result
         path = ir_file or os.path.join(
-            os.path.dirname(self.cfg.prompt_file) or ".", "prompt_ir.txt")
+            os.path.dirname(self.cfg.prompt_file) or ".",
+            "h3_context_ir_prompt.txt")
         prompt = _enhanced_prompt(result)
         if not prompt:
             print(f"[h3-ir] WARNING: no task.content.prompt in result; "
@@ -430,6 +425,28 @@ def _elide_data_urls(obj):
     return obj
 
 
+def _reference_paths(input_dir: str) -> list[str]:
+    """Reference file paths, sorted filename order = upload order.
+
+    References live in <input_dir>/references/ (the standard case
+    layout, also used by paprika.py exports) — a missing directory is
+    an error, not a fallback. Mirrored in generate.py; keep in sync.
+    """
+    base = os.path.join(input_dir, "references")
+    if not os.path.isdir(base):
+        raise FileNotFoundError(
+            f"{base} not found — case directories keep reference files "
+            f"in a references/ subfolder next to prompt.txt (create it "
+            f"empty for text-only t2va cases)")
+    try:
+        names = [n for n in sorted(os.listdir(base))
+                 if not n.startswith("README")
+                 and os.path.isfile(os.path.join(base, n))]
+    except OSError as exc:
+        raise OSError(f"cannot read reference directory {base}: {exc}") from exc
+    return [os.path.join(base, n) for n in names]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Submit one MiniMax H3-Context-IR task and wait for it.")
@@ -448,7 +465,8 @@ def main() -> int:
                              "task-aware: 16:9 for t2va, adaptive otherwise)")
     parser.add_argument("--ir-file", default=None, metavar="FILE",
                         help="where to save the enhanced prompt on success "
-                             "(default: prompt_ir.txt next to the input "
+                             "(default: h3_context_ir_prompt.txt next to the "
+                             "input "
                              "prompt.txt)")
     parser.add_argument("--trace", default=None, metavar="FILE",
                         help="where to save the request+response trace JSON "
