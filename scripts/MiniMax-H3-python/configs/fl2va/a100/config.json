@@ -31,7 +31,7 @@
     "width": 1344,
     "height": 768,
     "input_dir": "/data/jw/workspace/vllm-omni/inputs/i2va",
-    "use_ir_prompt": false
+    "use_context_ir_prompt": false
   },
   "warmup": 3
 }
