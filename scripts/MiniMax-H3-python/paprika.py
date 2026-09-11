@@ -8,8 +8,8 @@ PAPRIKA_KEY + a task id -> one self-contained reproduction directory,
       task.json                    reproduction manifest (verbatim)
       prompt.txt                   .prompt
       parameters.json              .parameters
-      context-ir-prompt.txt        .context_ir_optimized_prompt (if present)
-      inputs/NN_<role>_<id>.<ext>  input/reference assets, manifest order
+      h3_context_ir_prompt.txt     .context_ir_optimized_prompt (if present)
+      references/NN_<role>_<id>.<ext>  input/reference assets, manifest order
       outputs/video.mp4            the generated video (when available)
 
 Usage:
@@ -148,10 +148,10 @@ class PaprikaClient:
         """Write the whole reproduction directory; returns the manifest."""
         cfg = self.cfg
         out = cfg.output_dir
-        for sub in ("inputs", "outputs"):
+        for sub in ("references", "outputs"):
             os.makedirs(os.path.join(out, sub), exist_ok=True)
         os.chmod(out, 0o700)
-        for sub in ("inputs", "outputs"):
+        for sub in ("references", "outputs"):
             os.chmod(os.path.join(out, sub), 0o700)
 
         manifest = self.fetch_manifest()
@@ -165,9 +165,10 @@ class PaprikaClient:
         ir_prompt = manifest.get("context_ir_optimized_prompt")
         if ir_prompt is not None:
             self._write_file(str(ir_prompt),
-                             os.path.join(out, "context-ir-prompt.txt"))
+                             os.path.join(out, "h3_context_ir_prompt.txt"))
 
-        asset_count = self._download_assets(manifest, os.path.join(out, "inputs"))
+        asset_count = self._download_assets(manifest,
+                                            os.path.join(out, "references"))
         video_path = self._download_video(manifest, os.path.join(out, "outputs"))
 
         status = manifest.get("status")
@@ -188,7 +189,7 @@ class PaprikaClient:
             fh.write(text)
         os.chmod(path, 0o600)
 
-    def _download_assets(self, manifest: dict, inputs_dir: str) -> int:
+    def _download_assets(self, manifest: dict, refs_dir: str) -> int:
         """Save every unique input/reference asset, manifest order.
 
         download_url present -> the authed API asset endpoint; else
@@ -208,7 +209,7 @@ class PaprikaClient:
             role = _sanitize(str(asset.get("role") or "asset"),
                              keep_upper=False)
             ext = EXT_BY_MIME.get(asset.get("mime_type") or "", "")
-            dest = os.path.join(inputs_dir, f"{n:02d}_{role}_{aid}{ext}")
+            dest = os.path.join(refs_dir, f"{n:02d}_{role}_{aid}{ext}")
             if asset.get("download_url"):
                 if not ASSET_ID_RE.match(aid):
                     raise RuntimeError(f"invalid asset id in manifest: {aid}")
