@@ -116,8 +116,10 @@ fields (INPUT_DIR resolution, run_dir timestamps) stay consistent.
   cpu-offload, and `cache_config` — a dict whose keys mirror vLLM-Omni's
   official `DiffusionCacheConfig` (unknown keys are rejected; the
   `CACHE_CONFIG` env var accepts a JSON override merged on top).
-- **`GenerateConfig`** (generate.py): shape (`task_type`, `width`/`height`,
-  `duration`, `seed`), fan-out (`rounds`, `ports`, `host`, `out_dir`), and
+- **`GenerateConfig`** (generate.py): shape (`task_type`, `width`/`height` or
+  `aspect_ratio` — one of 21:9/16:9/4:3/1:1/3:4/9:16, which replaces both and
+  lets the server derive the 768-short-edge canvas; `adaptive`/`auto` = server
+  default, `duration`, `seed`), fan-out (`rounds`, `ports`, `host`, `out_dir`), and
   `INPUT_DIR` — the only input knob. A case directory holds `prompt.txt`
   plus 0–2 reference frames (0 = text-only, 1 = first frame, 2 = first +
   last frame, sorted filename order = upload order; no URL downloads).

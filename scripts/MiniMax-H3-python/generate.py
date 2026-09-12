@@ -30,6 +30,10 @@ Env knobs (defaults match the bash version unless noted):
   DURATION       audio/video seconds in extra_params          (5)
   WIDTH          explicit output width                        (832)
   HEIGHT         explicit output height                       (480)
+  ASPECT_RATIO   named output ratio; replaces WIDTH/HEIGHT — the server
+                 derives the 768-short-edge canvas from it. One of
+                 21:9 16:9 4:3 1:1 3:4 9:16 (adaptive/auto = server
+                 default 16:9).                           (unset)
   INPUT_DIR      the ONLY input knob: per-case directory holding prompt.txt
                  plus reference files under references/ (sorted filename
                  order = upload order, which defines the <Picture/Video N>
@@ -98,6 +102,7 @@ class GenerateConfig:
     duration: int = 5
     width: int = 832
     height: int = 480
+    aspect_ratio: str | None = None
     input_dir: str = os.path.join(REPO_ROOT, "inputs", "i2va")
     use_context_ir_prompt: bool = False
     request_timeout: float = 4500.0
@@ -130,6 +135,7 @@ class GenerateConfig:
             duration=env("DURATION", 5, int),
             width=env("WIDTH", 832, int),
             height=env("HEIGHT", 480, int),
+            aspect_ratio=env("ASPECT_RATIO", None) or None,
             input_dir=env("INPUT_DIR", os.path.join(
                 REPO_ROOT, "inputs", "r2va" if task_type == "ref2va"
                 else "i2va")),
@@ -175,6 +181,16 @@ class GenerateConfig:
         return dataclasses.replace(cfg, **overrides)
 
     def __post_init__(self) -> None:
+        # Mirror of the server's MINIMAX_H3_SUPPORTED_ASPECT_RATIOS plus the
+        # adaptive/auto aliases (preprocessing.resolve_minimax_h3_aspect_ratio
+        # rejects anything else server-side; fail here for a clearer error).
+        if self.aspect_ratio is not None:
+            v = self.aspect_ratio.strip().lower()
+            if v not in {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16",
+                         "adaptive", "auto"}:
+                raise ValueError(
+                    f"aspect_ratio must be one of 21:9, 16:9, 4:3, 1:1, 3:4, "
+                    f"9:16 (or adaptive/auto), got {self.aspect_ratio!r}")
         if not self.ports:
             self.ports = [self.port_base + i for i in range(self.num_services)]
         # The ONLY input knob is INPUT_DIR: prompt.txt plus reference files
@@ -251,20 +267,27 @@ class GenerateConfig:
     def build_form(self) -> dict[str, str]:
         """config -> multipart form fields (single source of truth, mirrors
         the curl -F flags of the bash client)."""
-        return {
+        form = {
             "prompt": self.prompt,
             "fps": "24",
             "num_inference_steps": "50",
             "flow_shift": "12",
             "seed": self.seed,
-            "width": str(self.width),
-            "height": str(self.height),
-            "extra_params": json.dumps({
-                "task": self.task_type,
-                "duration": int(self.duration),
-                "audio_flow_shift": 3.0,
-            }),
         }
+        if self.aspect_ratio is not None:
+            # Named-ratio mode: width/height stay unset so the server
+            # derives the 768-short-edge canvas from aspect_ratio
+            # (pipeline_minimax_h3.py resolve_sampling_shapes).
+            form["aspect_ratio"] = self.aspect_ratio
+        else:
+            form["width"] = str(self.width)
+            form["height"] = str(self.height)
+        form["extra_params"] = json.dumps({
+            "task": self.task_type,
+            "duration": int(self.duration),
+            "audio_flow_shift": 3.0,
+        })
+        return form
 
     def out_path(self, rnd: int, svc: int, port: int) -> str:
         return os.path.join(
@@ -397,7 +420,9 @@ class Generator:
         print(f"[generate.py] prompt:  {cfg.prompt_file}")
         print(f"[generate.py] frames:  "
               f"{' '.join(cfg.ref_files) or '<none — text-only request>'}\n")
-        print(f"Posting {cfg.width}x{cfg.height}/{cfg.duration}s "
+        canvas = (f"{cfg.aspect_ratio}@768p" if cfg.aspect_ratio
+                  else f"{cfg.width}x{cfg.height}")
+        print(f"Posting {canvas}/{cfg.duration}s "
               f"{cfg.task_type} request ({cfg.ref_desc}) to "
               f"{len(cfg.ports)} service(s): {ports_str}, {cfg.rounds} round(s) "
               f"(concurrent fan-out per round)...\n")
