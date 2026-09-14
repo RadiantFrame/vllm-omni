@@ -26,11 +26,11 @@
   "generate": {
     "rounds": 5,
     "seed": "0",
-    "task": "fl2va",
+    "task": "t2va",
     "duration": 5,
     "short_edge": 768,
-    "aspect_ratio": "adaptive",
-    "input_dir": "/data/jw/workspace/vllm-omni/inputs/i2va",
+    "aspect_ratio": "16:9",
+    "input_dir": "/data/jw/workspace/vllm-omni/inputs/t2va",
     "use_context_ir_prompt": true
   },
   "warmup": 3
