@@ -116,7 +116,9 @@ fields (INPUT_DIR resolution, run_dir timestamps) stay consistent.
   cpu-offload, and `cache_config` — a dict whose keys mirror vLLM-Omni's
   official `DiffusionCacheConfig` (unknown keys are rejected; the
   `CACHE_CONFIG` env var accepts a JSON override merged on top).
-- **`GenerateConfig`** (generate.py): shape (`task_type`, `short_edge` (768,
+- **`GenerateConfig`** (generate.py): shape (`task` (t2va/fl2va/ref2va; the
+  server-side request parameter — fl2va with an empty references/ upgrades
+  to text-only t2va), `short_edge` (768,
   the only tier the server accepts), `aspect_ratio` — the official request
   surface; the server derives the canvas and reference images keep their
   native aspect. One of 21:9/16:9/4:3/1:1/3:4/9:16; `adaptive`/`auto`:

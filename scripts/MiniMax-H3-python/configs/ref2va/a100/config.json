@@ -26,7 +26,7 @@
   "generate": {
     "rounds": 5,
     "seed": "0",
-    "task_type": "ref2va",
+    "task": "ref2va",
     "duration": 15,
     "short_edge": 768,
     "aspect_ratio": "16:9",
