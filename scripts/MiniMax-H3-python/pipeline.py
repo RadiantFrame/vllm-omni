@@ -120,7 +120,7 @@ class PipelineConfig:
 
             {
               "deploy":   {"cuda_visible_devices": "4,5,6,7", "usp": 4, ...},
-              "generate": {"task_type": "ref2va", "duration": 15, ...},
+              "generate": {"task": "ref2va", "duration": 15, ...},
               "warmup":   2,
               "run_dir":  "logs/my-fixed-name"
             }

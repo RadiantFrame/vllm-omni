@@ -26,14 +26,18 @@ Env knobs (defaults match the bash version unless noted):
   OUT_DIR        output directory                             (./outputs)
   ROUNDS         rounds of concurrent fan-out                 (5)
   SEED           generation seed                              (0)
-  TASK_TYPE      extra_params task: fl2va | ref2va           (fl2va)
+  TASK           request task (server-side naming): t2va | fl2va | ref2va
+                 (fl2va). fl2va with an EMPTY references/ folder upgrades
+                 to t2va (text-only), which requires a named aspect_ratio.
   DURATION       audio/video seconds in extra_params          (5)
-  SHORT_EDGE     output resolution tier; the server hard-validates 768 (768)
+  SHORT_EDGE     output resolution tier: 480 or 768            (768)
   ASPECT_RATIO   output ratio — the server derives the canvas from
                  short_edge + aspect_ratio (official request surface; no
                  width/height is sent). One of 21:9 16:9 4:3 1:1 3:4 9:16.
                  fl2va: always follows the first image (the value is
-                 advisory only). ref2va: auto = 16:9 default.  (auto)
+                 advisory only). fl2va with an EMPTY references/ folder
+                 resolves to t2va, which REQUIRES a named ratio (e.g.
+                 9:16). ref2va: auto = 16:9 default.        (auto)
   INPUT_DIR      the ONLY input knob: per-case directory holding prompt.txt
                  plus reference files under references/ (sorted filename
                  order = upload order, which defines the <Picture/Video N>
@@ -98,7 +102,7 @@ class GenerateConfig:
     out_dir: str = "./outputs"
     rounds: int = 5
     seed: str = "0"
-    task_type: str = "fl2va"
+    task: str = "fl2va"
     duration: int = 5
     short_edge: int = 768
     aspect_ratio: str = "auto"
@@ -121,7 +125,7 @@ class GenerateConfig:
         ports_env = os.environ.get("PORTS", "")
         # Only INPUT_DIR is task-aware (fl2va -> inputs/i2va, ref2va ->
         # inputs/r2va); all other defaults are shared between tasks.
-        task_type = env("TASK_TYPE", "fl2va")
+        task = env("TASK", "fl2va")
         return cls(
             host=env("HOST", "localhost"),
             port_base=env("PORT_BASE", 9000, int),
@@ -130,13 +134,13 @@ class GenerateConfig:
             out_dir=env("OUT_DIR", "./outputs"),
             rounds=env("ROUNDS", 5, int),
             seed=env("SEED", "0"),
-            task_type=task_type,
+            task=task,
             duration=env("DURATION", 5, int),
             short_edge=env("SHORT_EDGE", 768, int),
             aspect_ratio=env("ASPECT_RATIO", "auto"),
             input_dir=env("INPUT_DIR", os.path.join(
-                REPO_ROOT, "inputs", "r2va" if task_type == "ref2va"
-                else "i2va")),
+                REPO_ROOT, "inputs", {"ref2va": "r2va", "t2va": "t2va"}
+                .get(task, "i2va"))),
             use_context_ir_prompt=env("USE_CONTEXT_IR_PROMPT", False,
                               lambda v: v.strip().lower()
                               in ("1", "true", "yes", "on")),
@@ -154,7 +158,7 @@ class GenerateConfig:
         Symmetric to from_env() (env still fills anything the dict omits;
         the dict wins per key). Unknown keys are rejected so a typo fails
         loudly. replace() re-runs __post_init__, so derived fields
-        (prompt/ref_files) reload against the overridden input_dir/task_type;
+        (prompt/ref_files) reload against the overridden input_dir/task;
         passing those derived keys explicitly is not an error (run snapshots
         contain them) but they are stripped with a warning — edit input_dir
         instead.
@@ -179,13 +183,15 @@ class GenerateConfig:
         return dataclasses.replace(cfg, **overrides)
 
     def __post_init__(self) -> None:
-        # Mirror of the server's contract (pipeline_minimax_h3.py /
-        # preprocessing): the canvas derives from short_edge + aspect_ratio.
-        # The server hard-validates short_edge == 768 and rejects unknown
-        # ratios; fail here for a clearer error. fl2va always follows the
-        # first image server-side, so a named ratio there is advisory only.
-        if self.short_edge != 768:
-            raise ValueError(f"SHORT_EDGE must be 768 (the only tier the "
+        # Mirror of the server's contract (pipeline_minimax_h3.py):
+        # `task` matches the request-side task parameter; the canvas derives
+        # from short_edge + aspect_ratio. The server hard-validates the
+        # short_edge tiers and ratio values.
+        if self.task not in ("t2va", "fl2va", "ref2va"):
+            raise ValueError(f"TASK must be one of t2va, fl2va, ref2va, "
+                             f"got {self.task!r}")
+        if self.short_edge not in (480, 768):
+            raise ValueError(f"SHORT_EDGE must be 480 or 768 (the tiers the "
                              f"server accepts), got {self.short_edge}")
         v = self.aspect_ratio.strip().lower()
         if v not in {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16",
@@ -193,10 +199,7 @@ class GenerateConfig:
             raise ValueError(
                 f"aspect_ratio must be one of 21:9, 16:9, 4:3, 1:1, 3:4, "
                 f"9:16 (or adaptive/auto), got {self.aspect_ratio!r}")
-        if self.task_type == "fl2va" and v not in ("adaptive", "auto"):
-            print(f"[generate.py] NOTE: fl2va canvas always follows the first "
-                  f"image server-side; aspect_ratio={self.aspect_ratio!r} "
-                  f"is advisory only", file=sys.stderr)
+
         if not self.ports:
             self.ports = [self.port_base + i for i in range(self.num_services)]
         # The ONLY input knob is INPUT_DIR: prompt.txt plus reference files
@@ -217,6 +220,22 @@ class GenerateConfig:
         with open(self.prompt_file, encoding="utf-8") as fh:
             self.prompt = fh.read()
         self.ref_files = _reference_paths(self.input_dir)
+        # Hailuo-style task merge (the server routes the same way when a
+        # request omits the task): an fl2va case dir with an EMPTY
+        # references/ folder is a text-only request and upgrades to the
+        # t2va task, which requires an explicit named aspect_ratio (its
+        # canvas has no image to follow).
+        if self.task == "fl2va" and not self.ref_files:
+            self.task = "t2va"
+        if self.task == "t2va" and v in ("adaptive", "auto"):
+            raise ValueError(
+                "t2va requires an explicit aspect_ratio (e.g. 9:16) — "
+                "auto/adaptive has no image to follow")
+        if self.task == "fl2va" and v not in ("adaptive", "auto"):
+            print(f"[generate.py] NOTE: fl2va canvas always follows the "
+                  f"first image server-side; "
+                  f"aspect_ratio={self.aspect_ratio!r} is advisory only",
+                  file=sys.stderr)
         self._validate_refs()
 
     # Ref2VA contract (enforced server-side, checked here for a clearer
@@ -237,7 +256,7 @@ class GenerateConfig:
                          f"(extension '{ext}' is not image/video/audio)")
 
     def _validate_refs(self) -> None:
-        if self.task_type == "ref2va":
+        if self.task == "ref2va":
             kinds = [self._ref_kind(p) for p in self.ref_files]
             counts = {k: kinds.count(k) for k in ("image", "video", "audio")}
             limits = {"image": 9, "video": 3, "audio": 3}
@@ -252,7 +271,7 @@ class GenerateConfig:
             for p in self.ref_files:
                 kind = self._ref_kind(p)
                 if kind != "image":
-                    raise ValueError(f"{self.task_type} reference files must "
+                    raise ValueError(f"{self.task} reference files must "
                                      f"be images, got {kind}: {p}")
             if len(self.ref_files) > 2:
                 raise ValueError(f"INPUT_DIR holds more than 2 reference frame "
@@ -260,12 +279,13 @@ class GenerateConfig:
 
     @property
     def ref_desc(self) -> str:
-        if self.task_type == "ref2va":
+        if self.task == "ref2va":
             n = len(self.ref_files)
             return f"{n} reference file(s) ({'/'.join(sorted(set(
                 self._ref_kind(p) for p in self.ref_files))) or 'none'})"
+        if self.task == "t2va":
+            return "0 references (text-only)"
         return {
-            0: "0 reference frames (text-only)",
             1: "first frame only",
             2: "first + last frame",
         }[len(self.ref_files)]
@@ -285,7 +305,7 @@ class GenerateConfig:
             "aspect_ratio": self.aspect_ratio,
         }
         form["extra_params"] = json.dumps({
-            "task": self.task_type,
+            "task": self.task,
             "duration": int(self.duration),
             "audio_flow_shift": 3.0,
         })
@@ -294,7 +314,7 @@ class GenerateConfig:
     def out_path(self, rnd: int, svc: int, port: int) -> str:
         return os.path.join(
             self.out_dir,
-            f"{self.task_type}_r{rnd}_svc{svc}_port{port}_seed{self.seed}.mp4",
+            f"{self.task}_r{rnd}_svc{svc}_port{port}_seed{self.seed}.mp4",
         )
 
 
@@ -365,7 +385,7 @@ class Generator:
         # fl2va/t2va send "input_reference" image frames; ref2va sends
         # "input_references" mixed image/video/audio files whose modality the
         # server detects from the MIME type.
-        field = "input_references" if self.cfg.task_type == "ref2va" \
+        field = "input_references" if self.cfg.task == "ref2va" \
             else "input_reference"
         frame_handles = [open(p, "rb") for p in self.cfg.ref_files]
         files = [(field, (os.path.basename(p), fh,
@@ -424,7 +444,7 @@ class Generator:
               f"{' '.join(cfg.ref_files) or '<none — text-only request>'}\n")
         canvas = f"{cfg.aspect_ratio}@{cfg.short_edge}p"
         print(f"Posting {canvas}/{cfg.duration}s "
-              f"{cfg.task_type} request ({cfg.ref_desc}) to "
+              f"{cfg.task} request ({cfg.ref_desc}) to "
               f"{len(cfg.ports)} service(s): {ports_str}, {cfg.rounds} round(s) "
               f"(concurrent fan-out per round)...\n")
 
@@ -481,7 +501,7 @@ class Generator:
             return False
         print(f"All done: {cfg.rounds} rounds x {len(cfg.ports)} service(s). "
               f"Outputs in {cfg.out_dir}/ "
-              f"({cfg.task_type}_r<R>_svc<N>_...)")
+              f"({cfg.task}_r<R>_svc<N>_...)")
         print("Read steady-state e2e_total_ms from each service log from "
               "round ~3 onward (rounds 1-2 are warmup/settling).")
         return True
