@@ -28,8 +28,8 @@
     "seed": "0",
     "task_type": "ref2va",
     "duration": 15,
-    "width": 1344,
-    "height": 768,
+    "short_edge": 768,
+    "aspect_ratio": "16:9",
     "input_dir": "/data/jw/workspace/vllm-omni/inputs/r2va-omni",
     "use_context_ir_prompt": false
   },

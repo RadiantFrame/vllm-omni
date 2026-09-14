@@ -28,8 +28,8 @@
     "seed": "0",
     "task_type": "fl2va",
     "duration": 5,
-    "width": 1344,
-    "height": 768,
+    "short_edge": 768,
+    "aspect_ratio": "adaptive",
     "input_dir": "/data/jw/workspace/vllm-omni/inputs/i2va",
     "use_context_ir_prompt": false
   },

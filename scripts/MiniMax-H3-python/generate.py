@@ -28,12 +28,12 @@ Env knobs (defaults match the bash version unless noted):
   SEED           generation seed                              (0)
   TASK_TYPE      extra_params task: fl2va | ref2va           (fl2va)
   DURATION       audio/video seconds in extra_params          (5)
-  WIDTH          explicit output width                        (832)
-  HEIGHT         explicit output height                       (480)
-  ASPECT_RATIO   named output ratio; replaces WIDTH/HEIGHT — the server
-                 derives the 768-short-edge canvas from it. One of
-                 21:9 16:9 4:3 1:1 3:4 9:16 (adaptive/auto = server
-                 default 16:9).                           (unset)
+  SHORT_EDGE     output resolution tier; the server hard-validates 768 (768)
+  ASPECT_RATIO   output ratio — the server derives the canvas from
+                 short_edge + aspect_ratio (official request surface; no
+                 width/height is sent). One of 21:9 16:9 4:3 1:1 3:4 9:16.
+                 fl2va: always follows the first image (the value is
+                 advisory only). ref2va: auto = 16:9 default.  (auto)
   INPUT_DIR      the ONLY input knob: per-case directory holding prompt.txt
                  plus reference files under references/ (sorted filename
                  order = upload order, which defines the <Picture/Video N>
@@ -100,9 +100,8 @@ class GenerateConfig:
     seed: str = "0"
     task_type: str = "fl2va"
     duration: int = 5
-    width: int = 832
-    height: int = 480
-    aspect_ratio: str | None = None
+    short_edge: int = 768
+    aspect_ratio: str = "auto"
     input_dir: str = os.path.join(REPO_ROOT, "inputs", "i2va")
     use_context_ir_prompt: bool = False
     request_timeout: float = 4500.0
@@ -133,9 +132,8 @@ class GenerateConfig:
             seed=env("SEED", "0"),
             task_type=task_type,
             duration=env("DURATION", 5, int),
-            width=env("WIDTH", 832, int),
-            height=env("HEIGHT", 480, int),
-            aspect_ratio=env("ASPECT_RATIO", None) or None,
+            short_edge=env("SHORT_EDGE", 768, int),
+            aspect_ratio=env("ASPECT_RATIO", "auto"),
             input_dir=env("INPUT_DIR", os.path.join(
                 REPO_ROOT, "inputs", "r2va" if task_type == "ref2va"
                 else "i2va")),
@@ -181,16 +179,24 @@ class GenerateConfig:
         return dataclasses.replace(cfg, **overrides)
 
     def __post_init__(self) -> None:
-        # Mirror of the server's MINIMAX_H3_SUPPORTED_ASPECT_RATIOS plus the
-        # adaptive/auto aliases (preprocessing.resolve_minimax_h3_aspect_ratio
-        # rejects anything else server-side; fail here for a clearer error).
-        if self.aspect_ratio is not None:
-            v = self.aspect_ratio.strip().lower()
-            if v not in {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16",
-                         "adaptive", "auto"}:
-                raise ValueError(
-                    f"aspect_ratio must be one of 21:9, 16:9, 4:3, 1:1, 3:4, "
-                    f"9:16 (or adaptive/auto), got {self.aspect_ratio!r}")
+        # Mirror of the server's contract (pipeline_minimax_h3.py /
+        # preprocessing): the canvas derives from short_edge + aspect_ratio.
+        # The server hard-validates short_edge == 768 and rejects unknown
+        # ratios; fail here for a clearer error. fl2va always follows the
+        # first image server-side, so a named ratio there is advisory only.
+        if self.short_edge != 768:
+            raise ValueError(f"SHORT_EDGE must be 768 (the only tier the "
+                             f"server accepts), got {self.short_edge}")
+        v = self.aspect_ratio.strip().lower()
+        if v not in {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16",
+                     "adaptive", "auto"}:
+            raise ValueError(
+                f"aspect_ratio must be one of 21:9, 16:9, 4:3, 1:1, 3:4, "
+                f"9:16 (or adaptive/auto), got {self.aspect_ratio!r}")
+        if self.task_type == "fl2va" and v not in ("adaptive", "auto"):
+            print(f"[generate.py] NOTE: fl2va canvas always follows the first "
+                  f"image server-side; aspect_ratio={self.aspect_ratio!r} "
+                  f"is advisory only", file=sys.stderr)
         if not self.ports:
             self.ports = [self.port_base + i for i in range(self.num_services)]
         # The ONLY input knob is INPUT_DIR: prompt.txt plus reference files
@@ -266,22 +272,18 @@ class GenerateConfig:
 
     def build_form(self) -> dict[str, str]:
         """config -> multipart form fields (single source of truth, mirrors
-        the curl -F flags of the bash client)."""
+        the official request surface: short_edge + aspect_ratio; width and
+        height are never sent, so the server derives the canvas and
+        reference images keep their native aspect)."""
         form = {
             "prompt": self.prompt,
             "fps": "24",
             "num_inference_steps": "50",
             "flow_shift": "12",
             "seed": self.seed,
+            "short_edge": str(self.short_edge),
+            "aspect_ratio": self.aspect_ratio,
         }
-        if self.aspect_ratio is not None:
-            # Named-ratio mode: width/height stay unset so the server
-            # derives the 768-short-edge canvas from aspect_ratio
-            # (pipeline_minimax_h3.py resolve_sampling_shapes).
-            form["aspect_ratio"] = self.aspect_ratio
-        else:
-            form["width"] = str(self.width)
-            form["height"] = str(self.height)
         form["extra_params"] = json.dumps({
             "task": self.task_type,
             "duration": int(self.duration),
@@ -420,8 +422,7 @@ class Generator:
         print(f"[generate.py] prompt:  {cfg.prompt_file}")
         print(f"[generate.py] frames:  "
               f"{' '.join(cfg.ref_files) or '<none — text-only request>'}\n")
-        canvas = (f"{cfg.aspect_ratio}@768p" if cfg.aspect_ratio
-                  else f"{cfg.width}x{cfg.height}")
+        canvas = f"{cfg.aspect_ratio}@{cfg.short_edge}p"
         print(f"Posting {canvas}/{cfg.duration}s "
               f"{cfg.task_type} request ({cfg.ref_desc}) to "
               f"{len(cfg.ports)} service(s): {ports_str}, {cfg.rounds} round(s) "
