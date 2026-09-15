@@ -93,8 +93,10 @@ MIME_BY_EXT = {
     ".webp": "image/webp", ".heic": "image/heic", ".heif": "image/heif",
     # video: MP4/MOV (multimodal reference only)
     ".mp4": "video/mp4", ".mov": "video/quicktime",
-    # audio: WAV/MP3 (multimodal reference only)
-    ".wav": "audio/wav", ".mp3": "audio/mpeg",
+    # audio: WAV/MP3 (multimodal reference only). audio/mp3, not the
+    # RFC-correct audio/mpeg: the API validates the data-URL subtype as
+    # the file format and rejects ".mpeg" (error 2013).
+    ".wav": "audio/wav", ".mp3": "audio/mp3",
 }
 IMAGE_EXTS = {e for e, m in MIME_BY_EXT.items() if m.startswith("image/")}
 VIDEO_EXTS = {e for e, m in MIME_BY_EXT.items() if m.startswith("video/")}
