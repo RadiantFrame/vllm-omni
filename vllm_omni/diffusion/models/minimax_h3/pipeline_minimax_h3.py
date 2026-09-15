@@ -349,6 +349,26 @@ def _validate_ref2va_reference_counts(
         raise OmniClientError("ref2va accepts at most 12 total references")
 
 
+def _validate_ref2va_audio_lengths(
+    embedded_audio_lengths: list[int],
+    external_audio_lengths: list[int],
+) -> None:
+    """Validate the official Ref2VA audio-latent length contract.
+
+    Each audio condition must span 2-15 s (80-600 latents at 40 tokens/s).
+    The 15 s total budget applies to standalone audio only: a reference
+    video's embedded soundtrack is a separate condition — often the
+    replacement target — already bounded by the 15 s reference-video budget.
+    """
+    audio_lengths = embedded_audio_lengths + external_audio_lengths
+    if not audio_lengths:
+        return
+    if any(length < 80 or length > 600 for length in audio_lengths):
+        raise OmniClientError("MiniMax H3 audio references must each be between 2 and 15 seconds")
+    if sum(external_audio_lengths) > 600:
+        raise OmniClientError("MiniMax H3 audio references must be at most 15 seconds in total")
+
+
 def _resolve_minimax_h3_aspect_ratio(
     task: str,
     value: Any,
@@ -1694,6 +1714,8 @@ class MiniMaxH3Pipeline(
         audio_condition = None
         ref_audio_t = None
         audio_lengths = None
+        embedded_audio_lengths: list[int] = []
+        external_audio_lengths: list[int] = []
         ref_blocks = None
         with tempfile.TemporaryDirectory(prefix="minimax_h3_ref2va_") as workdir:
             prepared_videos = None
@@ -1806,13 +1828,9 @@ class MiniMaxH3Pipeline(
 
             if visual_shapes and len(visual_shapes) == 1:
                 visual_shape = visual_shapes[0]
-            if audio_lengths:
-                if any(length < 80 or length > 600 for length in audio_lengths):
-                    raise OmniClientError("MiniMax H3 audio references must each be between 2 and 15 seconds")
-                if sum(audio_lengths) > 600:
-                    raise OmniClientError("MiniMax H3 audio references must be at most 15 seconds in total")
-                if len(audio_lengths) == 1:
-                    ref_audio_t = audio_lengths[0]
+            _validate_ref2va_audio_lengths(embedded_audio_lengths, external_audio_lengths)
+            if audio_lengths and len(audio_lengths) == 1:
+                ref_audio_t = audio_lengths[0]
 
         seed = int(sampling.seed if sampling.seed is not None else 42)
         sigma_schedule = self._base_schedule_for_task(task)

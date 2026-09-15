@@ -1955,6 +1955,26 @@ def test_g4_standalone_audio_duration_and_total_duration_contract():
         )
 
 
+def test_g4_ref2va_embedded_soundtrack_does_not_draw_from_standalone_audio_budget():
+    from vllm_omni.diffusion.models.minimax_h3.pipeline_minimax_h3 import (
+        _validate_ref2va_audio_lengths,
+    )
+    from vllm_omni.errors import OmniClientError
+
+    # Official Ref2VA accepts a reference video with an embedded soundtrack
+    # (≈10.1 s → 405 latents) plus standalone audio near the 15 s cap
+    # (600 latents): the embedded soundtrack is a separate condition, not
+    # part of the standalone-audio budget.
+    _validate_ref2va_audio_lengths([405], [600])
+
+    with pytest.raises(OmniClientError, match="at most 15 seconds in total"):
+        _validate_ref2va_audio_lengths([], [320, 320])
+    with pytest.raises(OmniClientError, match="between 2 and 15 seconds"):
+        _validate_ref2va_audio_lengths([40], [400])
+    with pytest.raises(OmniClientError, match="between 2 and 15 seconds"):
+        _validate_ref2va_audio_lengths([400], [601])
+
+
 def test_ref2va_audio_duration_validation_precedes_rank_branch(monkeypatch):
     from vllm_omni.diffusion.models.minimax_h3 import pipeline_minimax_h3 as pipeline_module
 
