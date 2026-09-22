@@ -9,43 +9,50 @@ enhanced prompt / context IR lives in task.content.prompt, ready to feed
 the follow-up video-generation call.
 
 Usage:
-    MINIMAX_API_KEY=... python h3_context_ir.py [--task-type TYPE]
-                                               [--input-dir DIR]
-                                               [--ir-file FILE]
-                                               [--duration S] [--ratio W:H]
+    MINIMAX_API_KEY=... python h3_context_ir.py [--payload FILE]
+                                               [--ir-file FILE] [--trace FILE]
 
-Three request modes (TASK_TYPE / --task-type), mirroring the API's content
-combinations. Inputs come from INPUT_DIR (same convention as generate.py):
-prompt.txt plus reference files under references/ (sorted filename order =
-upload order, the <Picture/Video N> numbering the prompt refers to; create
-it empty for text-only t2va). Local files are sent as base64 data URLs.
+The single input is a payload.json — the request body, with local files:
 
-  t2va  text-only             no reference files; RATIO required and
-                              non-adaptive (default 16:9); default
-                              INPUT_DIR <repo>/inputs/t2va
-  i2va  first [+last] frame   1-2 images; ratio is always adaptive (the
-                              frame decides it); default INPUT_DIR
-                              <repo>/inputs/i2va
-  r2va  multimodal reference  >=1 and <=9 images + <=3 videos + <=3 audios,
-                              role reference_<kind>; ratio optional (default
-                              adaptive); default INPUT_DIR <repo>/inputs/r2va
+  {
+    "model": "MiniMax-H3",
+    "content": [
+      {"type": "text", "text": "<prompt>"},
+      {"type": "image_url",
+       "image_url": {"url": "references/01_image.jpg"},
+       "role": "first_frame"}
+    ],
+    "duration": 5,
+    "ratio": "adaptive"
+  }
+
+Media urls are file paths RELATIVE to the payload file's directory (any
+nesting works); the client reads each file and sends it as a base64 data
+URL (http(s) URLs are not supported — download the file first). roles and
+the docs' mode rules, mirrored here:
+
+  text-only    no media items; ratio must be explicit (not adaptive)
+  frame        1-2 image_url items, roles first_frame [+ last_frame];
+               ratio is decided by the frame (adaptive)
+  reference    image/video/audio items, roles reference_<kind>; the API
+               caps them at 9 images / 3 videos / 3 audios and validates
+               the combination server-side (clear 2013-style errors)
+
+duration (4-15) and ratio may be omitted (the API defaults them).
 
 On success the enhanced prompt (task.content.prompt) is written to
---ir-file, defaulting to h3_context_ir_prompt.txt next to the input
-prompt.txt.
-Every terminal run also writes a trace JSON — the exact submit request
-(base64 data URLs elided to length markers) plus the terminal response —
-to --trace, defaulting to h3_context_ir.json in the same directory (one
-latest trace per case dir, overwritten each run); failure/cancelled
-runs are traced too.
+--ir-file, defaulting to h3_context_ir_prompt.txt next to the payload
+file (generate.py's USE_CONTEXT_IR_PROMPT reads it from there). Every
+terminal run also writes a trace JSON — the exact submit request (base64
+data URLs elided to length markers) plus the terminal response — to
+--trace, defaulting to h3_context_ir.json in the same directory (one
+latest trace per case dir, overwritten each run); failure/cancelled runs
+are traced too. The payload file thus doubles as the input record.
 
 Env knobs (field names uppercased):
   MINIMAX_API_KEY     API bearer token                  (required)
   API_BASE            API root                          (https://api.minimax.cn)
-  TASK_TYPE           t2va | i2va | r2va                (i2va)
-  INPUT_DIR           case directory: prompt.txt + refs (task-aware default)
-  DURATION            target video seconds, 4-15        (5)
-  RATIO               adaptive|21:9|16:9|4:3|1:1|3:4|9:16 (task-aware default)
+  PAYLOAD_FILE        the payload.json to submit        (inputs/i2va/payload.json)
   POLL_INTERVAL_S     poll cadence, seconds             (5)
   POLL_TIMEOUT_S      give-up timeout, seconds          (900)
 
@@ -78,6 +85,7 @@ import requests
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
+DEFAULT_PAYLOAD = os.path.join(REPO_ROOT, "inputs", "i2va", "payload.json")
 
 # V2 async task states, shared by /v2 video generation, h3_context_ir and
 # video regeneration: queued -> running -> succeeded | failed | cancelled.
@@ -98,144 +106,124 @@ MIME_BY_EXT = {
     # the file format and rejects ".mpeg" (error 2013).
     ".wav": "audio/wav", ".mp3": "audio/mp3",
 }
-IMAGE_EXTS = {e for e, m in MIME_BY_EXT.items() if m.startswith("image/")}
-VIDEO_EXTS = {e for e, m in MIME_BY_EXT.items() if m.startswith("video/")}
-AUDIO_EXTS = {e for e, m in MIME_BY_EXT.items() if m.startswith("audio/")}
+# content item types that carry a media file (their inner dict key equals
+# the type, e.g. {"type": "image_url", "image_url": {"url": ...}}).
+MEDIA_URL_TYPES = {"image_url", "video_url", "audio_url"}
 
-TASK_TYPES = {"t2va", "i2va", "r2va"}
 RATIOS = {"adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
 MAX_BODY_BYTES = 64 * 1024 * 1024   # API hard limit on the request body
 
 
 @dataclass
 class ContextIRConfig:
-    """Request shape + API settings (mirrors the toolbox config layout).
+    """One payload.json + API settings.
 
-    Empty input_dir / ratio mean "derive from task_type": input_dir from
-    the per-task default case directory, ratio 16:9 for t2va (where the
-    API forbids adaptive) and adaptive otherwise.
+    __post_init__ loads and validates the payload, resolving each media
+    url to an absolute path (checked to exist, with an accepted
+    extension) for submit()'s base64 conversion.
     """
 
     api_base: str = "https://api.minimax.cn"
     api_key: str = ""
-    task_type: str = "i2va"
-    input_dir: str = ""
-    duration: int = 5
-    ratio: str = ""
+    payload_file: str = ""   # --payload: the request body, local-file urls
     poll_interval_s: float = 5.0
     poll_timeout_s: float = 900.0
 
-    # Derived in __post_init__ from input_dir (same pattern as GenerateConfig).
-    prompt_file: str = field(default="", init=False)  # input prompt.txt path
-    prompt: str = field(default="", init=False)
-    refs: list[dict] = field(default_factory=list, init=False)
-
-    # Per-mode reference caps (enforced server-side by the API; checked
-    # here for a clearer client-side error).
-    REF_LIMITS = {"r2va": {"image": 9, "video": 3, "audio": 3}}
+    # Derived in __post_init__: verbatim payload, its directory (anchors
+    # the trace / enhanced-prompt defaults), and content-index -> absolute
+    # media path for submit()'s url -> data-URL swap.
+    payload: dict = field(default_factory=dict, init=False)
+    payload_dir: str = field(default="", init=False)
+    media_paths: dict[int, str] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         if not self.api_key:
             raise ValueError("MINIMAX_API_KEY is required (bearer token)")
-        if self.task_type not in TASK_TYPES:
-            raise ValueError(f"TASK_TYPE must be one of {sorted(TASK_TYPES)}, "
-                             f"got '{self.task_type}'")
-        if not self.input_dir:
-            self.input_dir = os.path.join(REPO_ROOT, "inputs", self.task_type)
-        if not self.ratio:
-            self.ratio = "16:9" if self.task_type == "t2va" else "adaptive"
-        self._validate_request_params()
-        self._load_inputs()
+        if not self.payload_file:
+            self.payload_file = DEFAULT_PAYLOAD
+        self.payload_file = os.path.abspath(self.payload_file)
+        self.payload_dir = os.path.dirname(self.payload_file)
+        self._load_payload()
 
-    def _validate_request_params(self) -> None:
-        if not 4 <= self.duration <= 15:
-            raise ValueError(f"DURATION must be in [4, 15], got "
-                             f"{self.duration}")
-        if self.ratio not in RATIOS:
-            raise ValueError(f"RATIO must be one of {sorted(RATIOS)}, got "
-                             f"'{self.ratio}'")
-        if self.task_type == "t2va" and self.ratio == "adaptive":
-            raise ValueError("t2va requires an explicit non-adaptive RATIO "
-                             "(text-only requests have no image to adapt to)")
-        if self.task_type == "i2va" and self.ratio != "adaptive":
-            print(f"[h3-ir] NOTE: i2va ratio is decided by the frame image; "
-                  f"ignoring RATIO={self.ratio}", file=sys.stderr)
-            self.ratio = "adaptive"
+    def _load_payload(self) -> None:
+        """Read the payload.json, sanity-check it, resolve media paths.
 
-    def _load_inputs(self) -> None:
-        """Resolve prompt.txt + reference files from input_dir into refs."""
-        self.prompt_file = os.path.join(self.input_dir, "prompt.txt")
-        if not os.path.isfile(self.prompt_file):
-            raise FileNotFoundError(
-                f"{self.prompt_file} not found (check INPUT_DIR)")
-        with open(self.prompt_file, encoding="utf-8") as fh:
-            self.prompt = fh.read()
-        paths = _reference_paths(self.input_dir)
-        kinds = [self._ref_kind(p) for p in paths]
-        self._validate_refs(paths, kinds)
-        self.refs = [
-            {"kind": kind, "role": role, "path": path,
-             "data_url": _data_url(path)}
-            for path, kind, role in zip(paths, kinds, self._roles(kinds))
-        ]
+        The body is submitted verbatim except for the media url ->
+        base64 data-URL swap; these checks only mirror the API's own
+        constraints (model name, content shape, duration range, ratio
+        enum, accepted file formats) for a clearer client-side error.
+        Mode-specific rules (roles, media combinations) are validated
+        server-side. duration and ratio may be omitted (the API defaults
+        them).
+        """
+        with open(self.payload_file, encoding="utf-8") as fh:
+            try:
+                payload = json.load(fh)
+            except ValueError as exc:
+                raise ValueError(f"{self.payload_file} is not valid JSON: "
+                                 f"{exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"{self.payload_file} must hold a JSON object "
+                             f"(the request body), got "
+                             f"{type(payload).__name__}")
+        if payload.get("model") != "MiniMax-H3":
+            raise ValueError(f"{self.payload_file}: model must be "
+                             f"'MiniMax-H3', got {payload.get('model')!r}")
+        content = payload.get("content")
+        if not isinstance(content, list) or not content:
+            raise ValueError(f"{self.payload_file}: needs a non-empty "
+                             f"'content' array")
+        for i, item in enumerate(content):
+            self._validate_item(i, item)
+        if "duration" in payload and not 4 <= payload["duration"] <= 15:
+            raise ValueError(f"{self.payload_file}: duration must be in "
+                             f"[4, 15], got {payload['duration']}")
+        if "ratio" in payload and payload["ratio"] not in RATIOS:
+            raise ValueError(f"{self.payload_file}: ratio must be one of "
+                             f"{sorted(RATIOS)}, got {payload['ratio']!r}")
+        self.payload = payload
 
-    def _ref_kind(self, path: str) -> str:
+    def _validate_item(self, i: int, item) -> None:
+        """Check one content item; record media urls in media_paths."""
+        where = f"{self.payload_file}: content[{i}]"
+        if not isinstance(item, dict) or "type" not in item:
+            raise ValueError(f"{where} must be an object with a 'type'")
+        kind = item["type"]
+        if kind == "text":
+            if not isinstance(item.get("text"), str):
+                raise ValueError(f"{where} text item needs a string 'text'")
+            return
+        if kind not in MEDIA_URL_TYPES:
+            raise ValueError(f"{where} type must be 'text' or one of "
+                             f"{sorted(MEDIA_URL_TYPES)}, got {kind!r}")
+        holder = item.get(kind)
+        url = holder.get("url") if isinstance(holder, dict) else None
+        if not isinstance(url, str) or not url:
+            raise ValueError(f"{where} {kind} item needs "
+                             f"{{'{kind}': {{'url': ...}}}} with a file path")
+        path = os.path.normpath(os.path.join(self.payload_dir, url))
+        if not os.path.isfile(path):
+            raise ValueError(f"{where} url '{url}' -> {path} not found "
+                             f"(paths are relative to the payload file)")
         ext = os.path.splitext(path)[1].lower()
-        if ext in IMAGE_EXTS:
-            return "image"
-        if ext in VIDEO_EXTS:
-            return "video"
-        if ext in AUDIO_EXTS:
-            return "audio"
-        raise ValueError(f"unrecognized reference modality for '{path}' "
-                         f"('{ext}' is not one the API accepts: image "
-                         f"{sorted(IMAGE_EXTS)}, video {sorted(VIDEO_EXTS)}, "
-                         f"audio {sorted(AUDIO_EXTS)})")
-
-    def _validate_refs(self, paths: list[str], kinds: list[str]) -> None:
-        if self.task_type == "t2va":
-            if paths:
-                raise ValueError(f"t2va takes no reference files, INPUT_DIR "
-                                 f"holds {len(paths)}: {paths}")
-        elif self.task_type == "i2va":
-            bad = [p for p, k in zip(paths, kinds) if k != "image"]
-            if bad:
-                raise ValueError(f"i2va reference files must be images, got "
-                                 f"other modalities: {bad}")
-            if not paths:
-                raise ValueError("i2va needs 1-2 frame images (first [+last]) "
-                                 "in INPUT_DIR; for text-only use "
-                                 "TASK_TYPE=t2va")
-            if len(paths) > 2:
-                raise ValueError(f"i2va takes at most 2 frame images (first "
-                                 f"[+ last]); INPUT_DIR holds {len(paths)}")
-        else:  # r2va
-            if not paths:
-                raise ValueError("r2va needs at least 1 reference file in "
-                                 "INPUT_DIR; for text-only use TASK_TYPE=t2va")
-            counts = {k: kinds.count(k) for k in ("image", "video", "audio")}
-            for kind, limit in self.REF_LIMITS["r2va"].items():
-                if counts[kind] > limit:
-                    raise ValueError(f"r2va allows at most {limit} {kind} "
-                                     f"reference(s), got {counts[kind]}")
-
-    def _roles(self, kinds: list[str]) -> list[str]:
-        """API role per reference, in upload order (after _validate_refs)."""
-        if self.task_type == "i2va":
-            return ["first_frame", "last_frame"][:len(kinds)]
-        return [f"reference_{k}" for k in kinds]
+        mime = MIME_BY_EXT.get(ext)
+        if mime is None or not mime.startswith(f"{kind.removesuffix('_url')}/"):
+            accepted = {e: m for e, m in MIME_BY_EXT.items()
+                        if m.startswith(f"{kind.removesuffix('_url')}/")}
+            raise ValueError(f"{where} url '{url}': '{ext}' does not match "
+                             f"{kind} (accepted: {sorted(accepted)})")
+        self.media_paths[i] = path
 
     @property
     def ref_desc(self) -> str:
-        n = len(self.refs)
-        if self.task_type == "t2va":
-            return "0 references (text-only)"
-        if self.task_type == "i2va":
-            return {1: "first frame", 2: "first + last frame"}[n]
-        counts = {k: sum(r["kind"] == k for r in self.refs)
-                  for k in ("image", "video", "audio")}
-        return (f"{n} reference(s): {counts['image']} image(s) / "
-                f"{counts['video']} video(s) / {counts['audio']} audio(s)")
+        """One-line media summary of the payload, for submit()'s print."""
+        media = [item for item in self.payload.get("content", [])
+                 if item.get("type") != "text"]
+        items = ", ".join(
+            f"{i.get('type', '?')}"
+            + (f"({i['role']})" if i.get("role") else "")
+            for i in media) or "text only"
+        return items
 
 
 class ContextIRClient:
@@ -252,28 +240,27 @@ class ContextIRClient:
     def submit(self) -> str:
         """Create the task; returns its task_id."""
         cfg = self.cfg
-        content: list[dict] = [{"type": "text", "text": cfg.prompt}]
-        for r in cfg.refs:
-            content.append({
-                "type": f"{r['kind']}_url",
-                f"{r['kind']}_url": {"url": r["data_url"]},
-                "role": r["role"],
-            })
-        payload = {
-            "model": "MiniMax-H3",
-            "content": content,
-            "duration": cfg.duration,
-            "ratio": cfg.ratio,
-        }
+        payload = cfg.payload
+        if cfg.media_paths:
+            # Copy-on-write swap of local file paths -> base64 data URLs;
+            # cfg.payload (the on-disk record) keeps the relative paths.
+            content = []
+            for i, item in enumerate(payload["content"]):
+                if i in cfg.media_paths:
+                    item = dict(item)
+                    item[item["type"]] = {**item[item["type"]],
+                                          "url": _data_url(cfg.media_paths[i])}
+                content.append(item)
+            payload = {**payload, "content": content}
         self.last_payload = payload
         size = len(json.dumps(payload).encode("utf-8"))
         if size > MAX_BODY_BYTES:
             raise RuntimeError(
                 f"request body is {size / 1e6:.0f} MB, over the API's 64 MB "
-                f"limit; drop or shrink references (large files need public "
-                f"URLs, which this client does not upload)")
-        print(f"[h3-ir] {cfg.task_type} request ({cfg.ref_desc}), "
-              f"duration={cfg.duration}s ratio={cfg.ratio}")
+                f"limit; drop or shrink media files (base64 inflates them "
+                f"~33%; public URLs are not supported by this client)")
+        print(f"[h3-ir] payload request from {cfg.payload_file} "
+              f"({cfg.ref_desc})")
         resp = requests.post(f"{self.base}/v2/h3_context_ir",
                              json=payload,
                              headers={
@@ -320,9 +307,9 @@ class ContextIRClient:
         server-side created_at -> updated_at span when present. Always
         writes a trace JSON ({"request": ..., "response": ...}; data URLs
         elided) to trace_file, defaulting to h3_context_ir.json next to
-        cfg.prompt_file (overwritten each run). On success, additionally
+        the payload file (overwritten each run). On success, additionally
         saves the enhanced prompt (task.content.prompt) to ir_file,
-        defaulting to h3_context_ir_prompt.txt next to cfg.prompt_file.
+        defaulting to h3_context_ir_prompt.txt next to the payload file.
         """
         start = time.monotonic()
         result = self.wait(self.submit())
@@ -335,9 +322,8 @@ class ContextIRClient:
         self._write_trace(result, trace_file)
         if _task_status(result) not in TERMINAL_OK:
             return result
-        path = ir_file or os.path.join(
-            os.path.dirname(self.cfg.prompt_file) or ".",
-            "h3_context_ir_prompt.txt")
+        path = ir_file or os.path.join(self.cfg.payload_dir,
+                                       "h3_context_ir_prompt.txt")
         prompt = _enhanced_prompt(result)
         if not prompt:
             print(f"[h3-ir] WARNING: no task.content.prompt in result; "
@@ -354,9 +340,8 @@ class ContextIRClient:
         Written on failure/cancel too (a TimeoutError in wait() raises
         past run(), so a timed-out run leaves no trace).
         """
-        path = trace_file or os.path.join(
-            os.path.dirname(self.cfg.prompt_file) or ".",
-            "h3_context_ir.json")
+        path = trace_file or os.path.join(self.cfg.payload_dir,
+                                          "h3_context_ir.json")
         doc = {"request": _elide_data_urls(self.last_payload),
                "response": result}
         with open(path, "w", encoding="utf-8") as fh:
@@ -415,8 +400,8 @@ def _data_url(path: str) -> str:
 def _elide_data_urls(obj):
     """Deep copy with inline base64 data URLs replaced by length markers.
 
-    The media itself lives in INPUT_DIR; eliding keeps the request trace
-    small and diffable.
+    The media itself lives next to the payload file; eliding keeps the
+    request trace small and diffable.
     """
     if isinstance(obj, dict):
         return {k: _elide_data_urls(v) for k, v in obj.items()}
@@ -427,53 +412,23 @@ def _elide_data_urls(obj):
     return obj
 
 
-def _reference_paths(input_dir: str) -> list[str]:
-    """Reference file paths, sorted filename order = upload order.
-
-    References live in <input_dir>/references/ (the standard case
-    layout, also used by paprika.py exports) — a missing directory is
-    an error, not a fallback. Mirrored in generate.py; keep in sync.
-    """
-    base = os.path.join(input_dir, "references")
-    if not os.path.isdir(base):
-        raise FileNotFoundError(
-            f"{base} not found — case directories keep reference files "
-            f"in a references/ subfolder next to prompt.txt (create it "
-            f"empty for text-only t2va cases)")
-    try:
-        names = [n for n in sorted(os.listdir(base))
-                 if not n.startswith("README")
-                 and os.path.isfile(os.path.join(base, n))]
-    except OSError as exc:
-        raise OSError(f"cannot read reference directory {base}: {exc}") from exc
-    return [os.path.join(base, n) for n in names]
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Submit one MiniMax H3-Context-IR task and wait for it.")
-    parser.add_argument("--task-type", default=None, metavar="TYPE",
-                        choices=sorted(TASK_TYPES),
-                        help="request mode (default: env TASK_TYPE, or i2va)")
-    parser.add_argument("--input-dir", default=None, metavar="DIR",
-                        help="case directory holding prompt.txt + mode-"
-                             "dependent reference files (default: env "
-                             "INPUT_DIR, or inputs/<task_type>)")
-    parser.add_argument("--duration", type=int, default=None, metavar="S",
-                        help="target video seconds, 4-15 (default: env "
-                             "DURATION, or 5)")
-    parser.add_argument("--ratio", default=None, metavar="W:H",
-                        help="target aspect ratio (default: env RATIO, or "
-                             "task-aware: 16:9 for t2va, adaptive otherwise)")
+    parser.add_argument("--payload", default=None, metavar="FILE",
+                        help="payload.json: the request body (model/content/"
+                             "duration/ratio, roles inline; media urls are "
+                             "file paths relative to this file, sent as "
+                             "base64 data URLs) (default: env PAYLOAD_FILE, "
+                             "or inputs/i2va/payload.json)")
     parser.add_argument("--ir-file", default=None, metavar="FILE",
                         help="where to save the enhanced prompt on success "
                              "(default: h3_context_ir_prompt.txt next to the "
-                             "input "
-                             "prompt.txt)")
+                             "payload file)")
     parser.add_argument("--trace", default=None, metavar="FILE",
                         help="where to save the request+response trace JSON "
                              "(default: h3_context_ir.json next to the "
-                             "input prompt.txt, overwritten each run)")
+                             "payload file, overwritten each run)")
     args = parser.parse_args()
 
     def env(name: str, default: Any, cast: Callable[[str], Any] = str) -> Any:
@@ -481,18 +436,12 @@ def main() -> int:
         return cast(raw) if raw else default
 
     try:
-        # CLI > env > task-aware default: absent flags fall back to their
-        # env twins; an empty input_dir/ratio then derives from task_type
-        # in __post_init__ — one construction, so validation only ever
-        # sees the final values.
+        # CLI > env > default: one construction, so _load_payload's
+        # validation only ever sees the final payload_file.
         cfg = ContextIRConfig(
             api_base=env("API_BASE", "https://api.minimax.cn"),
             api_key=env("MINIMAX_API_KEY", ""),
-            task_type=args.task_type or env("TASK_TYPE", "i2va"),
-            input_dir=args.input_dir or env("INPUT_DIR", ""),
-            duration=args.duration if args.duration is not None
-                     else env("DURATION", 5, int),
-            ratio=args.ratio or env("RATIO", ""),
+            payload_file=args.payload or env("PAYLOAD_FILE", ""),
             poll_interval_s=env("POLL_INTERVAL_S", 5.0, float),
             poll_timeout_s=env("POLL_TIMEOUT_S", 900.0, float),
         )
