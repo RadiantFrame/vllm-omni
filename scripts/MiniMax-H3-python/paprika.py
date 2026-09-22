@@ -5,9 +5,10 @@ Python port of tools/RadiantFrame/reproduce_task.sh (drop-in equivalent):
 PAPRIKA_KEY + a task id -> one self-contained reproduction directory,
 
     inputs/paprika-repro-task_<id>/
-      task.json                    reproduction manifest (verbatim)
+      task.json                    reproduction manifest (verbatim; its
+                                   .parameters field is the full parameter
+                                   set — no separate parameters.json)
       prompt.txt                   .prompt
-      parameters.json              .parameters
       h3_context_ir_prompt.txt     .context_ir_optimized_prompt (if present)
       references/NN_<role>_<id>.<ext>  input/reference assets, manifest order
       outputs/video.mp4            the generated video (when available)
@@ -159,9 +160,6 @@ class PaprikaClient:
                          os.path.join(out, "task.json"))
         self._write_file(str(manifest.get("prompt") or ""),
                          os.path.join(out, "prompt.txt"))
-        self._write_file(json.dumps(manifest.get("parameters"),
-                                    indent=2, ensure_ascii=False),
-                         os.path.join(out, "parameters.json"))
         ir_prompt = manifest.get("context_ir_optimized_prompt")
         if ir_prompt is not None:
             self._write_file(str(ir_prompt),
