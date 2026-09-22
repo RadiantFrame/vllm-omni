@@ -9,6 +9,8 @@ PAPRIKA_KEY + a task id -> one self-contained reproduction directory,
                                    .parameters field is the full parameter
                                    set — no separate parameters.json)
       prompt.txt                   .prompt
+      payload.json                 h3_context_ir.py request body (relative
+                                   paths: prompt.txt + references/)
       h3_context_ir_prompt.txt     .context_ir_optimized_prompt (if present)
       references/NN_<role>_<id>.<ext>  input/reference assets, manifest order
       outputs/video.mp4            the generated video (when available)
@@ -165,8 +167,10 @@ class PaprikaClient:
             self._write_file(str(ir_prompt),
                              os.path.join(out, "h3_context_ir_prompt.txt"))
 
-        asset_count = self._download_assets(manifest,
+        assets = self._unique_assets(manifest)
+        asset_count = self._download_assets(assets,
                                             os.path.join(out, "references"))
+        payload_path = self._write_payload(manifest, assets)
         video_path = self._download_video(manifest, os.path.join(out, "outputs"))
 
         status = manifest.get("status")
@@ -175,6 +179,7 @@ class PaprikaClient:
               f"to {out}")
         print(f"[paprika] prompt: {os.path.join(out, 'prompt.txt')}")
         print(f"[paprika] manifest: {os.path.join(out, 'task.json')}")
+        print(f"[paprika] payload: {payload_path}")
         print(f"[paprika] input assets: {asset_count}")
         if video_path:
             print(f"[paprika] video: {video_path}")
@@ -187,12 +192,11 @@ class PaprikaClient:
             fh.write(text)
         os.chmod(path, 0o600)
 
-    def _download_assets(self, manifest: dict, refs_dir: str) -> int:
-        """Save every unique input/reference asset, manifest order.
+    def _unique_assets(self, manifest: dict) -> list[dict]:
+        """input/reference assets deduped by asset_id, manifest order.
 
-        download_url present -> the authed API asset endpoint; else
-        source_url -> direct fetch (no auth, redirects followed); else
-        the asset has no downloadable copy (warn).
+        The same enumeration drives _download_assets (file names) and
+        _write_payload (payload urls), keeping the two in lockstep.
         """
         seen: set[str] = set()
         assets = []
@@ -202,12 +206,60 @@ class PaprikaClient:
                 if aid and aid not in seen:
                     seen.add(aid)
                     assets.append(asset)
+        return assets
+
+    def _write_payload(self, manifest: dict, assets: list[dict]) -> str:
+        """Write payload.json — the h3_context_ir.py request body.
+
+        Relative paths only: text -> prompt.txt, media urls -> the
+        references/ files _download_assets just wrote (same numbering).
+        Roles pass through sanitized (REFERENCE_IMAGE -> reference_image,
+        the r2va reference roles); duration/ratio come from parameters.
+        Assets without a downloadable copy are skipped with a warning —
+        the payload must not point at files that do not exist.
+        """
+        params = manifest.get("parameters") or {}
+        content: list[dict] = [{"type": "text", "text": "prompt.txt"}]
+        for n, asset in enumerate(assets, 1):
+            if not (asset.get("download_url") or asset.get("source_url")):
+                print(f"[paprika] WARNING: payload skips asset "
+                      f"{asset.get('asset_id')} (no downloadable copy)",
+                      file=sys.stderr)
+                continue
+            kind = str(asset.get("kind") or "").lower()
+            if kind not in ("image", "video", "audio"):
+                print(f"[paprika] WARNING: payload skips asset "
+                      f"{asset.get('asset_id')} (unknown kind "
+                      f"{kind!r})", file=sys.stderr)
+                continue
+            item = {"type": f"{kind}_url",
+                    f"{kind}_url": {"url":
+                                    f"references/{_asset_name(n, asset)}"}}
+            if asset.get("role"):
+                item["role"] = _sanitize(str(asset["role"]),
+                                         keep_upper=False)
+            content.append(item)
+        payload = {"model": "MiniMax-H3", "content": content}
+        duration = params.get("durationSeconds", params.get("duration"))
+        if duration is not None:
+            payload["duration"] = duration
+        if params.get("aspectRatio"):
+            payload["ratio"] = params["aspectRatio"]
+        path = os.path.join(self.cfg.output_dir, "payload.json")
+        self._write_file(json.dumps(payload, indent=2, ensure_ascii=False),
+                         path)
+        return path
+
+    def _download_assets(self, assets: list[dict], refs_dir: str) -> int:
+        """Save every unique input/reference asset, manifest order.
+
+        download_url present -> the authed API asset endpoint; else
+        source_url -> direct fetch (no auth, redirects followed); else
+        the asset has no downloadable copy (warn).
+        """
         for n, asset in enumerate(assets, 1):
             aid = asset["asset_id"]
-            role = _sanitize(str(asset.get("role") or "asset"),
-                             keep_upper=False)
-            ext = EXT_BY_MIME.get(asset.get("mime_type") or "", "")
-            dest = os.path.join(refs_dir, f"{n:02d}_{role}_{aid}{ext}")
+            dest = os.path.join(refs_dir, _asset_name(n, asset))
             if asset.get("download_url"):
                 if not ASSET_ID_RE.match(aid):
                     raise RuntimeError(f"invalid asset id in manifest: {aid}")
@@ -230,6 +282,13 @@ class PaprikaClient:
             self._get(manifest["video_source_url"], auth=False, dest=dest)
             return dest
         return None
+
+
+def _asset_name(n: int, asset: dict) -> str:
+    """references/ file name: NN_<role>_<asset_id><ext>."""
+    role = _sanitize(str(asset.get("role") or "asset"), keep_upper=False)
+    ext = EXT_BY_MIME.get(asset.get("mime_type") or "", "")
+    return f"{n:02d}_{role}_{asset['asset_id']}{ext}"
 
 
 def _sanitize(text: str, keep_upper: bool = True) -> str:
