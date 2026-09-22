@@ -9,7 +9,7 @@ PAPRIKA_KEY + a task id -> one self-contained reproduction directory,
                                    .parameters field is the full parameter
                                    set — no separate parameters.json)
       prompt.txt                   .prompt
-      payload.json                 h3_context_ir.py request body (relative
+      h3_context_ir_payload.json   h3_context_ir.py request body (relative
                                    paths: prompt.txt + references/)
       h3_context_ir_prompt.txt     .context_ir_optimized_prompt (if present)
       references/NN_<role>_<id>.<ext>  input/reference assets, manifest order
@@ -209,7 +209,7 @@ class PaprikaClient:
         return assets
 
     def _write_payload(self, manifest: dict, assets: list[dict]) -> str:
-        """Write payload.json — the h3_context_ir.py request body.
+        """Write h3_context_ir_payload.json — the h3_context_ir.py request body.
 
         Relative paths only: text -> prompt.txt, media urls -> the
         references/ files _download_assets just wrote (same numbering).
@@ -245,7 +245,7 @@ class PaprikaClient:
             payload["duration"] = duration
         if params.get("aspectRatio"):
             payload["ratio"] = params["aspectRatio"]
-        path = os.path.join(self.cfg.output_dir, "payload.json")
+        path = os.path.join(self.cfg.output_dir, "h3_context_ir_payload.json")
         self._write_file(json.dumps(payload, indent=2, ensure_ascii=False),
                          path)
         return path

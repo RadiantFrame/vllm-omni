@@ -12,7 +12,8 @@ Usage:
     MINIMAX_API_KEY=... python h3_context_ir.py [--payload FILE]
                                                [--ir-file FILE] [--trace FILE]
 
-The single input is a payload.json — the request body, with local files:
+The single input is a h3_context_ir_payload.json — the request body,
+with local files:
 
   {
     "model": "MiniMax-H3",
@@ -53,7 +54,8 @@ are traced too. The payload file thus doubles as the input record.
 Env knobs (field names uppercased):
   MINIMAX_API_KEY     API bearer token                  (required)
   API_BASE            API root                          (https://api.minimax.cn)
-  PAYLOAD_FILE        the payload.json to submit        (inputs/i2va/payload.json)
+  PAYLOAD_FILE        the h3_context_ir_payload.json to submit
+                      (inputs/i2va/h3_context_ir_payload.json)
   POLL_INTERVAL_S     poll cadence, seconds             (5)
   POLL_TIMEOUT_S      give-up timeout, seconds          (900)
 
@@ -86,7 +88,8 @@ import requests
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
-DEFAULT_PAYLOAD = os.path.join(REPO_ROOT, "inputs", "i2va", "payload.json")
+DEFAULT_PAYLOAD = os.path.join(REPO_ROOT, "inputs", "i2va",
+                               "h3_context_ir_payload.json")
 
 # V2 async task states, shared by /v2 video generation, h3_context_ir and
 # video regeneration: queued -> running -> succeeded | failed | cancelled.
@@ -117,7 +120,7 @@ MAX_BODY_BYTES = 64 * 1024 * 1024   # API hard limit on the request body
 
 @dataclass
 class ContextIRConfig:
-    """One payload.json + API settings.
+    """One h3_context_ir_payload.json + API settings.
 
     __post_init__ loads and validates the payload, resolving each media
     url to an absolute path (checked to exist, with an accepted
@@ -149,7 +152,7 @@ class ContextIRConfig:
         self._load_payload()
 
     def _load_payload(self) -> None:
-        """Read the payload.json, sanity-check it, resolve media paths.
+        """Read the payload, sanity-check it, resolve media paths.
 
         The body is submitted verbatim except for the media url ->
         base64 data-URL swap; these checks only mirror the API's own
@@ -436,12 +439,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Submit one MiniMax H3-Context-IR task and wait for it.")
     parser.add_argument("--payload", default=None, metavar="FILE",
-                        help="payload.json: the request body (model/content/"
-                             "duration/ratio, roles inline; the text prompt "
-                             "and media urls are file paths relative to this "
-                             "file, sent verbatim / as base64 data URLs) "
-                             "(default: env PAYLOAD_FILE, or "
-                             "inputs/i2va/payload.json)")
+                        help="h3_context_ir_payload.json: the request body "
+                             "(model/content/duration/ratio, roles inline; "
+                             "the text prompt and media urls are file paths "
+                             "relative to this file, sent verbatim / as "
+                             "base64 data URLs) (default: env PAYLOAD_FILE, "
+                             "or inputs/i2va/h3_context_ir_payload.json)")
     parser.add_argument("--ir-file", default=None, metavar="FILE",
                         help="where to save the enhanced prompt on success "
                              "(default: h3_context_ir_prompt.txt next to the "
