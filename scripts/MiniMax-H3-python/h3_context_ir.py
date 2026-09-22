@@ -17,7 +17,7 @@ The single input is a payload.json — the request body, with local files:
   {
     "model": "MiniMax-H3",
     "content": [
-      {"type": "text", "text": "<prompt>"},
+      {"type": "text", "text": "prompt.txt"},
       {"type": "image_url",
        "image_url": {"url": "references/01_image.jpg"},
        "role": "first_frame"}
@@ -26,10 +26,11 @@ The single input is a payload.json — the request body, with local files:
     "ratio": "adaptive"
   }
 
-Media urls are file paths RELATIVE to the payload file's directory (any
-nesting works); the client reads each file and sends it as a base64 data
-URL (http(s) URLs are not supported — download the file first). roles and
-the docs' mode rules, mirrored here:
+The text prompt and media urls are file paths RELATIVE to the payload
+file's directory (any nesting works); the client reads each file and
+sends the prompt verbatim and the media as base64 data URLs (http(s)
+URLs are not supported — download the file first). roles and the docs'
+mode rules, mirrored here:
 
   text-only    no media items; ratio must be explicit (not adaptive)
   frame        1-2 image_url items, roles first_frame [+ last_frame];
@@ -131,9 +132,11 @@ class ContextIRConfig:
 
     # Derived in __post_init__: verbatim payload, its directory (anchors
     # the trace / enhanced-prompt defaults), and content-index -> absolute
-    # media path for submit()'s url -> data-URL swap.
+    # file paths for submit()'s path -> content swaps (text file read,
+    # media file base64'd).
     payload: dict = field(default_factory=dict, init=False)
     payload_dir: str = field(default="", init=False)
+    text_paths: dict[int, str] = field(default_factory=dict, init=False)
     media_paths: dict[int, str] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
@@ -190,8 +193,16 @@ class ContextIRConfig:
             raise ValueError(f"{where} must be an object with a 'type'")
         kind = item["type"]
         if kind == "text":
-            if not isinstance(item.get("text"), str):
-                raise ValueError(f"{where} text item needs a string 'text'")
+            text = item.get("text")
+            if not isinstance(text, str) or not text:
+                raise ValueError(f"{where} text item needs a string 'text' "
+                                 f"(a prompt file path)")
+            path = os.path.normpath(os.path.join(self.payload_dir, text))
+            if not os.path.isfile(path):
+                raise ValueError(f"{where} text '{text}' -> {path} not found "
+                                 f"(text values are file paths relative to "
+                                 f"the payload file)")
+            self.text_paths[i] = path
             return
         if kind not in MEDIA_URL_TYPES:
             raise ValueError(f"{where} type must be 'text' or one of "
@@ -241,12 +252,15 @@ class ContextIRClient:
         """Create the task; returns its task_id."""
         cfg = self.cfg
         payload = cfg.payload
-        if cfg.media_paths:
-            # Copy-on-write swap of local file paths -> base64 data URLs;
-            # cfg.payload (the on-disk record) keeps the relative paths.
+        if cfg.media_paths or cfg.text_paths:
+            # Copy-on-write swap of local file paths -> file contents
+            # (prompt text verbatim, media base64'd); cfg.payload (the
+            # on-disk record) keeps the relative paths.
             content = []
             for i, item in enumerate(payload["content"]):
-                if i in cfg.media_paths:
+                if i in cfg.text_paths:
+                    item = {**item, "text": _read_text(cfg.text_paths[i])}
+                elif i in cfg.media_paths:
                     item = dict(item)
                     item[item["type"]] = {**item[item["type"]],
                                           "url": _data_url(cfg.media_paths[i])}
@@ -389,6 +403,12 @@ def _task_duration(body) -> int | None:
         return None
 
 
+def _read_text(path: str) -> str:
+    """Local file -> prompt text (utf-8)."""
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
 def _data_url(path: str) -> str:
     """Local file -> base64 data URL (the API accepts link or base64)."""
     with open(path, "rb") as fh:
@@ -417,10 +437,11 @@ def main() -> int:
         description="Submit one MiniMax H3-Context-IR task and wait for it.")
     parser.add_argument("--payload", default=None, metavar="FILE",
                         help="payload.json: the request body (model/content/"
-                             "duration/ratio, roles inline; media urls are "
-                             "file paths relative to this file, sent as "
-                             "base64 data URLs) (default: env PAYLOAD_FILE, "
-                             "or inputs/i2va/payload.json)")
+                             "duration/ratio, roles inline; the text prompt "
+                             "and media urls are file paths relative to this "
+                             "file, sent verbatim / as base64 data URLs) "
+                             "(default: env PAYLOAD_FILE, or "
+                             "inputs/i2va/payload.json)")
     parser.add_argument("--ir-file", default=None, metavar="FILE",
                         help="where to save the enhanced prompt on success "
                              "(default: h3_context_ir_prompt.txt next to the "
