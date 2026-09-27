@@ -1523,6 +1523,12 @@ def test_minimax_h3_uses_the_official_output_canvas_policy():
     assert resolve_minimax_h3_output_canvas(21 / 9, 768) == (672, 1536)
     assert resolve_minimax_h3_output_canvas(16 / 9, 768) == (768, 1344)
     assert resolve_minimax_h3_output_canvas(9 / 16, 768) == (1344, 768)
+    # Official 480P tier: the per-tier area cap is
+    # short_edge x align32(short_edge * 7/4) = 480x832.
+    assert resolve_minimax_h3_output_canvas(16 / 9, 480) == (480, 832)
+    assert resolve_minimax_h3_output_canvas(9 / 16, 480) == (832, 480)
+    # 3:2 stays inside the cap; 720 rounds down to the 32-px multiple 704.
+    assert resolve_minimax_h3_output_canvas(3 / 2, 480) == (480, 704)
     with pytest.raises(ValueError, match="short_edge"):
         resolve_minimax_h3_output_canvas(16 / 9, 720)
 

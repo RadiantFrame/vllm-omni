@@ -25,6 +25,7 @@ from vllm_omni.model_executor.models.minimax_h3.conditioning import (
 from vllm_omni.model_executor.models.minimax_h3.long_video import max_output_seconds, resolve_long_video_mode
 from vllm_omni.model_executor.models.minimax_h3.preprocessing import (
     MINIMAX_H3_OUTPUT_SHORT_EDGE,
+    MINIMAX_H3_SUPPORTED_SHORT_EDGES,
     load_minimax_h3_images,
     resolve_minimax_h3_aspect_ratio,
     resolve_minimax_h3_output_canvas,
@@ -191,8 +192,9 @@ def resolve_minimax_h3_shape(
     )
     raw_short_edge = target.get("short_edge", extra.get("short_edge", MINIMAX_H3_OUTPUT_SHORT_EDGE))
     if isinstance(raw_short_edge, bool) or not isinstance(raw_short_edge, (int, np.integer)):
+        supported = ", ".join(str(v) for v in MINIMAX_H3_SUPPORTED_SHORT_EDGES)
         raise OmniClientError(
-            f"MiniMax H3 target.short_edge must be {MINIMAX_H3_OUTPUT_SHORT_EDGE}, got {raw_short_edge!r}"
+            f"MiniMax H3 target.short_edge must be one of {supported}, got {raw_short_edge!r}"
         )
     if height is None or width is None:
         height, width = resolve_minimax_h3_output_canvas(aspect_ratio, int(raw_short_edge))

@@ -33,7 +33,11 @@ _TEXT_TAG = 1
 _VIDEO_TAG = 0
 
 MINIMAX_H3_OUTPUT_SHORT_EDGE = 768
-MINIMAX_H3_OUTPUT_MAX_PIXELS = 768 * 1344
+MINIMAX_H3_SUPPORTED_SHORT_EDGES = (480, 768)
+# Official area policy per tier: total pixels are capped at
+# short_edge x align32(short_edge * 7/4) — 768 -> 768x1344,
+# 480 -> 480x832 (matches the official 480P 9:16 canvas).
+MINIMAX_H3_OUTPUT_LONG_EDGE_RATIO = 7 / 4
 MINIMAX_H3_REFERENCE_IMAGE_SHORT_EDGE = 2048
 MINIMAX_H3_REFERENCE_IMAGE_MULTIPLE = 32
 MINIMAX_H3_SUPPORTED_ASPECT_RATIOS = {
@@ -153,8 +157,9 @@ def resolve_minimax_h3_output_canvas(aspect_ratio: float, short_edge: int) -> tu
     """Resolve the official H3 ratio/area policy to a 32-pixel canvas."""
     if not math.isfinite(float(aspect_ratio)) or float(aspect_ratio) <= 0:
         raise OmniClientError(f"MiniMax H3 canvas aspect ratio must be positive, got {aspect_ratio!r}")
-    if short_edge != MINIMAX_H3_OUTPUT_SHORT_EDGE:
-        raise OmniClientError(f"MiniMax H3 target.short_edge must be {MINIMAX_H3_OUTPUT_SHORT_EDGE}, got {short_edge}")
+    if short_edge not in MINIMAX_H3_SUPPORTED_SHORT_EDGES:
+        supported = ", ".join(str(v) for v in MINIMAX_H3_SUPPORTED_SHORT_EDGES)
+        raise OmniClientError(f"MiniMax H3 target.short_edge must be one of {supported}, got {short_edge}")
     if aspect_ratio >= 1.0:
         width = float(short_edge) * aspect_ratio
         height = float(short_edge)
@@ -162,8 +167,9 @@ def resolve_minimax_h3_output_canvas(aspect_ratio: float, short_edge: int) -> tu
         width = float(short_edge)
         height = float(short_edge) / aspect_ratio
     area = width * height
-    if area > MINIMAX_H3_OUTPUT_MAX_PIXELS:
-        scale = (MINIMAX_H3_OUTPUT_MAX_PIXELS / area) ** 0.5
+    max_pixels = short_edge * _align_multiple(short_edge * MINIMAX_H3_OUTPUT_LONG_EDGE_RATIO, 32)
+    if area > max_pixels:
+        scale = (max_pixels / area) ** 0.5
         width *= scale
         height *= scale
     return _align_multiple(height, 32), _align_multiple(width, 32)
@@ -478,6 +484,7 @@ def build_minimax_h3_presentation(
 __all__ = [
     "IMAGE_PAD",
     "MINIMAX_H3_OUTPUT_SHORT_EDGE",
+    "MINIMAX_H3_SUPPORTED_SHORT_EDGES",
     "VIDEO_PAD",
     "VISION_END",
     "VISION_START",
