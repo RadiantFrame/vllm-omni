@@ -54,6 +54,10 @@ else:
 
 class SageAttentionBackend(AttentionBackend):
     accept_output_buffer: bool = True
+    # Sage kernels cannot consume an attn_mask, but a contiguous valid K/V
+    # prefix is expressible by slicing the tensors instead (forward_cuda), so
+    # packed [real, pad] callers may skip materializing the padding mask.
+    supports_prefix_kv_slicing: bool = True
 
     @staticmethod
     def get_supported_head_sizes() -> list[int]:
@@ -99,6 +103,22 @@ class SageAttentionImpl(AttentionImpl):
                 "SAGE_ATTN requires sageattention. Install with: "
                 "pip install git+https://github.com/thu-ml/SageAttention.git"
             )
+        if attn_metadata is not None and attn_metadata.attn_mask is None:
+            valid_kv_length = attn_metadata.extra.get("valid_kv_length")
+            if isinstance(valid_kv_length, int) and key.ndim == 4:
+                if not 0 < valid_kv_length <= key.shape[1]:
+                    raise ValueError(
+                        "valid_kv_length must be within the K/V sequence, "
+                        f"got {valid_kv_length} for length {key.shape[1]}"
+                    )
+                if valid_kv_length < key.shape[1]:
+                    # A contiguous valid prefix is mathematically equivalent to
+                    # a broadcast key-padding mask. Slicing K/V keeps Q/output
+                    # in the packed [B, S, H, D] layout (pad query rows are
+                    # never read downstream) and keeps the mask-free Sage
+                    # kernel computing on real tokens only.
+                    key = key[:, :valid_kv_length].contiguous()
+                    value = value[:, :valid_kv_length].contiguous()
         output = sageattn(
             query,
             key,
