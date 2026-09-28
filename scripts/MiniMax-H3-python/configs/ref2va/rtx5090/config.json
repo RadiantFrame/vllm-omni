@@ -1,0 +1,37 @@
+{
+  "deploy": {
+    "model": "/data/models/modelscope/MiniMax/MiniMax-H3/Ref2VA",
+    "cuda_visible_devices": "0,1,2,3,4,5,6,7",
+    "tensor_parallel_size": 4,
+    "diffusion_attention_backend": "SAGE_ATTN",
+    "quantization": "fp8",
+    "enable_cpu_offload": true,
+    "cache_backend": "cache_dit",
+    "cache_config": {
+      "Fn_compute_blocks": 1,
+      "Bn_compute_blocks": 0,
+      "max_warmup_steps": 4,
+      "max_cached_steps": -1,
+      "max_continuous_cached_steps": 1,
+      "residual_diff_threshold": 0.04,
+      "enable_taylorseer": false,
+      "taylorseer_order": 1,
+      "scm_steps_mask_policy": null,
+      "scm_steps_policy": "dynamic",
+      "num_inference_steps": null,
+      "force_refresh_step_hint": null,
+      "force_refresh_step_policy": "once"
+    }
+  },
+  "generate": {
+    "rounds": 5,
+    "seed": "0",
+    "task": "ref2va",
+    "duration": 15,
+    "short_edge": 768,
+    "aspect_ratio": "16:9",
+    "input_dir": "/data/jw/workspace/vllm-omni/inputs/r2va-omni",
+    "use_context_ir_prompt": true
+  },
+  "warmup": 3
+}
