@@ -31,8 +31,8 @@ its ratio from the first reference image):
 
 Usage:
     python matrix.py --dry-run          # list points + expected dims, exit
-    python matrix.py [--batch fl2va|ref2va] [--limit N]
-                     [--durations 15,10,5]
+    python matrix.py [--batch fl2va|ref2va] [--hardware a100|rtx5090]
+                     [--limit N] [--durations 15,10,5]
 
 Exit 0 iff every run succeeded AND every output resolution matches.
 """
@@ -49,7 +49,12 @@ from pathlib import Path
 from pipeline import PipelineConfig
 from search import Search, SearchConfig
 
-CASES = Path("/data/jw/workspace/vllm-omni/inputs")
+# Roots derived from this file (<repo>/scripts/MiniMax-H3-python/matrix.py),
+# mirroring REPO_ROOT in generate.py / h3_context_ir.py. CASES anchors input
+# case dirs; TOOL_DIR anchors the configs/<task>/<hardware>/ presets.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TOOL_DIR = Path(__file__).resolve().parent
+CASES = REPO_ROOT / "inputs"
 BASE = CASES / "paprika-repro-task_cabc382d8a081e6161a5"
 
 # Mirrors _resolve_output_canvas / _align_multiple in the pipeline (verified
@@ -82,8 +87,8 @@ def _points_for(task: str, input_dir: str, ratios: list[str],
         for dur in durations for se in (768, 480) for ar in ratios
     ]
 
-def batches(durations: list[int]) -> dict[str, tuple[str, list[dict]]]:
-    """batch name -> (preset path, points)."""
+def batches(durations: list[int], hardware: str = "a100") -> dict[str, tuple[str, list[dict]]]:
+    """batch name -> (preset path, points), deploying on ``hardware`` presets."""
     fl2va_points = (
         _points_for("fl2va", f"{BASE}-fl2va", ["adaptive"], durations)
         + _points_for("t2va", f"{BASE}-t2va", ["16:9", "9:16"], durations)
@@ -91,9 +96,17 @@ def batches(durations: list[int]) -> dict[str, tuple[str, list[dict]]]:
     ref2va_points = _points_for("ref2va", str(BASE), ["16:9", "9:16"],
                                 durations)
     return {
-        "fl2va": ("configs/fl2va/a100/config.json", fl2va_points),
-        "ref2va": ("configs/ref2va/a100/config.json", ref2va_points),
+        "fl2va": (preset_path("fl2va", hardware), fl2va_points),
+        "ref2va": (preset_path("ref2va", hardware), ref2va_points),
     }
+
+def preset_path(task: str, hardware: str) -> Path:
+    return TOOL_DIR / "configs" / task / hardware / "config.json"
+
+def available_hardware(task: str) -> list[str]:
+    """Hardware subdirs of ``configs/<task>/`` that hold a config.json."""
+    d = TOOL_DIR / "configs" / task
+    return sorted(p.name for p in d.iterdir() if (p / "config.json").is_file()) if d.is_dir() else []
 
 def expected_dims(point: dict) -> tuple[int, int]:
     ratio = (first_ref_ratio(point["input_dir"])
@@ -162,6 +175,9 @@ def main() -> int:
                     help="list points with expected dims and exit")
     ap.add_argument("--batch", choices=["fl2va", "ref2va"], default=None,
                     help="run only one deployment batch")
+    ap.add_argument("--hardware", default="a100", metavar="NAME",
+                    help="hardware preset subdir under configs/<task>/ "
+                         "selecting the deployment config (a100)")
     ap.add_argument("--limit", type=int, default=None,
                     help="run only the first N points per batch")
     ap.add_argument("--durations", default="15,10,5", metavar="LIST",
@@ -179,9 +195,18 @@ def main() -> int:
         print(f"ERROR: durations must be in [4, 15], got {durations}",
               file=sys.stderr)
         return 1
-    todo = batches(durations)
+    todo = batches(durations, args.hardware)
     if args.batch:
         todo = {args.batch: todo[args.batch]}
+    missing = [(name, preset) for name, (preset, _) in todo.items()
+               if not preset.is_file()]
+    if missing:
+        for name, preset in missing:
+            task = preset.parts[-3]  # .../configs/<task>/<hardware>/config.json
+            print(f"ERROR: no preset {preset} for batch {name!r} "
+                  f"(available: {', '.join(available_hardware(task)) or 'none'})",
+                  file=sys.stderr)
+        return 1
 
     if args.dry_run:
         for name, (preset, points) in todo.items():
