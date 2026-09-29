@@ -103,12 +103,24 @@ class GenerateConfig:
     rounds: int = 5
     seed: str = "0"
     task: str = "fl2va"
-    duration: int = 5
+    duration: float = 5.0
     short_edge: int = 768
     aspect_ratio: str = "auto"
     input_dir: str = os.path.join(REPO_ROOT, "inputs", "i2va")
     use_context_ir_prompt: bool = False
     request_timeout: float = 4500.0
+    # Steps / shifts are configurable so few-step students (Turbo, FastH3)
+    # can carry their artifact's own contract; flow_shift/audio_flow_shift
+    # accept null to omit the field entirely.
+    num_inference_steps: int = 50
+    flow_shift: int | None = 12
+    audio_flow_shift: float | None = 3.0
+    # Request-level LoRA activation (required by the Turbo matrix even when
+    # the adapter is preloaded via --lora-path): empty lora_path omits the
+    # "lora" form field entirely.
+    lora_path: str = ""
+    lora_name: str = ""
+    lora_scale: float = 1.0
 
     # Derived in __post_init__.
     ports: list[int] = field(default_factory=list)
@@ -135,7 +147,7 @@ class GenerateConfig:
             rounds=env("ROUNDS", 5, int),
             seed=env("SEED", "0"),
             task=task,
-            duration=env("DURATION", 5, int),
+            duration=env("DURATION", 5.0, float),
             short_edge=env("SHORT_EDGE", 768, int),
             aspect_ratio=env("ASPECT_RATIO", "auto"),
             input_dir=env("INPUT_DIR", os.path.join(
@@ -298,17 +310,28 @@ class GenerateConfig:
         form = {
             "prompt": self.prompt,
             "fps": "24",
-            "num_inference_steps": "50",
-            "flow_shift": "12",
+            "num_inference_steps": str(self.num_inference_steps),
             "seed": self.seed,
             "short_edge": str(self.short_edge),
             "aspect_ratio": self.aspect_ratio,
         }
-        form["extra_params"] = json.dumps({
+        # null shifts are omitted entirely (students that pin their own
+        # ladder reject overrides the request should not carry).
+        if self.flow_shift is not None:
+            form["flow_shift"] = str(self.flow_shift)
+        extra: dict[str, Any] = {
             "task": self.task,
-            "duration": int(self.duration),
-            "audio_flow_shift": 3.0,
-        })
+            "duration": self.duration,
+        }
+        if self.audio_flow_shift is not None:
+            extra["audio_flow_shift"] = self.audio_flow_shift
+        form["extra_params"] = json.dumps(extra)
+        if self.lora_path:
+            form["lora"] = json.dumps({
+                "name": self.lora_name or "lora",
+                "path": self.lora_path,
+                "scale": self.lora_scale,
+            })
         return form
 
     def out_path(self, rnd: int, svc: int, port: int) -> str:

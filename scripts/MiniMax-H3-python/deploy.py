@@ -121,9 +121,35 @@ class DeployConfig:
     # via Marlin on pre-Hopper GPUs). Off by default: quantization is a
     # deliberate trade (memory/speed vs accuracy), not a silent default.
     quantization: str = ""
+    # Optional --lora-path preloaded at startup. For the LightX2V Turbo
+    # matrix this must name ONE artifact file (a directory holding several
+    # is rejected as ambiguous) and pairs with lora_backend below; each
+    # request still activates it via its own "lora" form field.
+    lora_path: str = ""
+    # Optional --lora-backend (e.g. "peft" for the Turbo matrix). Empty
+    # (default) sends no flag.
+    lora_backend: str = ""
     # Off by default: CPU offload trades per-step PCIe traffic for GPU
     # memory headroom — enable deliberately on memory-tight setups.
+    # torch.compile granularity for the DiT ("regional" default; "eager"
+    # disables compilation — the first compiled request materializes extra
+    # compile-time buffers that can push a memory-tight profile over the
+    # edge, which eager avoids at some steady-state speed cost).
+    diffusion_compile_granularity: str = "regional"
+    # --enforce-eager: skip torch.compile entirely (the first compiled
+    # request materializes extra compile-time buffers that can push a
+    # memory-tight profile over the edge; eager trades steady-state
+    # speed for a flat memory profile).
+    enforce_eager: bool = False
+    # Optional --gpu-memory-utilization (vllm engine arg): None sends no
+    # flag and keeps the engine default; raise it on small cards when the
+    # inference activation peak lands just past the default reservation.
+    gpu_memory_utilization: float | None = None
     enable_cpu_offload: bool = False
+    # Distributed layer-wise offload: streams weights per layer during the
+    # forward, leaving VRAM for activations. The only offload mode the
+    # Turbo matrix allows (plain CPU offload is forbidden there).
+    enable_distributed_layerwise_offload: bool = False
     # Cache acceleration: "" (default) = no caching (clean baseline),
     # "cache_dit" enables it. Other backends (teacache, ...) are rejected
     # until cache_config's key validation covers their knobs. Caching trades
@@ -280,7 +306,7 @@ class DeployConfig:
             "--vae-parallel-mode", "tile", 
             "--vae-use-tiling",
             "--num-weight-load-threads", str(self.num_weight_load_threads),
-            "--diffusion-compile-granularity", "regional",
+            "--diffusion-compile-granularity", self.diffusion_compile_granularity,
             "--diffusion-attention-backend", self.diffusion_attention_backend,
         ]
         # Cache acceleration is optional: "" disables it entirely (baseline
@@ -294,8 +320,18 @@ class DeployConfig:
                     "--enable-cache-dit-summary"]
         if self.quantization:
             cmd += ["--quantization", self.quantization]
+        if self.enforce_eager:
+            cmd += ["--enforce-eager"]
+        if self.gpu_memory_utilization is not None:
+            cmd += ["--gpu-memory-utilization", str(self.gpu_memory_utilization)]
+        if self.lora_backend:
+            cmd += ["--lora-backend", self.lora_backend]
+        if self.lora_path:
+            cmd += ["--lora-path", self.lora_path]
         if self.enable_cpu_offload:
             cmd += ["--enable-cpu-offload"]
+        if self.enable_distributed_layerwise_offload:
+            cmd += ["--enable-distributed-layerwise-offload"]
         return cmd
 
     def build_env(self) -> dict[str, str]:
