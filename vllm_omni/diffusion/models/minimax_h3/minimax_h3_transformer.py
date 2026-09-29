@@ -1491,20 +1491,24 @@ class MiniMaxH3DiTModel(nn.Module):
             device=device,
             dtype=_BF16_DTYPE,
         )
+        # Slice before the dtype cast: casting the full packed embed first
+        # materializes a whole-sequence bf16 copy only to keep the local
+        # rows, which is the largest transient of this embed (2.3 GiB on a
+        # ref2va 768p/15s packing). Cast and slice commute elementwise.
         embeddings.index_add_(
             0,
             text_local_pos,
-            text_embed.to(_BF16_DTYPE)[: text_local_pos.shape[0]],
+            text_embed[: text_local_pos.shape[0]].to(_BF16_DTYPE),
         )
         embeddings.index_add_(
             0,
             img_local_pos,
-            video_embed.to(_BF16_DTYPE)[: img_local_pos.shape[0]],
+            video_embed[: img_local_pos.shape[0]].to(_BF16_DTYPE),
         )
         embeddings.index_add_(
             0,
             audio_local_pos,
-            audio_embed.to(_BF16_DTYPE)[: audio_local_pos.shape[0]],
+            audio_embed[: audio_local_pos.shape[0]].to(_BF16_DTYPE),
         )
 
         t_emb = self.time_embedder(unique_timesteps)
