@@ -91,6 +91,21 @@ from vllm_omni.worker.gpu_memory_utils import get_process_gpu_memory
 
 logger = init_logger(__name__)
 
+
+class _ShutdownSignalDeferral:
+    """Process-wide latch deferring SIGTERM/SIGINT while WorkerProc.shutdown()
+    restores offloaded state. The executor's termination signal used to land
+    mid-restore (the DLO block copy back to CPU outlives the executor's first
+    shutdown grace), unwinding restore_tensor_storage and logging a cleanup
+    ERROR on every DLO shutdown. See WorkerProc.shutdown / worker_main's
+    signal_handler."""
+
+    active: bool = False
+    pending: int | None = None
+
+
+_SHUTDOWN_SIGNAL_DEFERRAL = _ShutdownSignalDeferral()
+
 _ASYNC_OUTPUT_THREAD_JOIN_TIMEOUT_S = 10.0
 # Maximum time (in seconds) to wait for pending background D2H / SHM packing
 # to drain before the worker executes memory-releasing lifecycle tasks
@@ -1017,7 +1032,29 @@ class DiffusionWorker:
         return nullcontext()
 
     def shutdown(self) -> None:
-        """Shutdown the worker and cleanup distributed environment."""
+        """Shutdown the worker and cleanup distributed environment.
+
+        Runs with shutdown signals deferred (see ``_ShutdownSignalDeferral``):
+        the DLO block restores inside can take tens of seconds, and the
+        executor's termination signal landing mid-restore used to unwind
+        ``restore_tensor_storage`` and log a cleanup ERROR on every DLO
+        shutdown. A signal that arrives now is recorded and logged after
+        the restore finishes instead of interrupting it; the worker is
+        exiting either way, so the deferred signal needs no re-raise.
+        """
+        _SHUTDOWN_SIGNAL_DEFERRAL.active = True
+        try:
+            self._shutdown_deferred()
+        finally:
+            _SHUTDOWN_SIGNAL_DEFERRAL.active = False
+            if _SHUTDOWN_SIGNAL_DEFERRAL.pending is not None:
+                logger.info(
+                    "Shutdown signal %d deferred during worker cleanup; "
+                    "cleanup finished, exiting.",
+                    _SHUTDOWN_SIGNAL_DEFERRAL.pending)
+                _SHUTDOWN_SIGNAL_DEFERRAL.pending = None
+
+    def _shutdown_deferred(self) -> None:
         try:
             if self.model_runner is not None:
                 mgr = getattr(self.model_runner, "kv_transfer_manager", None)
@@ -1556,6 +1593,14 @@ class WorkerProc:
 
         def signal_handler(signum: int, frame) -> None:
             nonlocal shutdown_triggered
+            if _SHUTDOWN_SIGNAL_DEFERRAL.active:
+                # WorkerProc.shutdown() is restoring offloaded blocks as part
+                # of its own exit; interrupting that restore is what used to
+                # log "Cleanup failed while restoring a rank-local block" on
+                # every DLO teardown. Record the signal; shutdown() reports
+                # it after the restore finishes.
+                _SHUTDOWN_SIGNAL_DEFERRAL.pending = signum
+                return
             if not shutdown_triggered:
                 shutdown_triggered = True
                 raise SystemExit(128 + signum)

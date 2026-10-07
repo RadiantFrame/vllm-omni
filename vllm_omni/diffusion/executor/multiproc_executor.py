@@ -44,7 +44,14 @@ logger = init_logger(__name__)
 
 _DEQUEUE_TIMEOUT_S = 5.0
 _DLO_DP_WAVE_TIMEOUT_S = float(os.environ.get("VLLM_OMNI_DLO_DP_WAVE_TIMEOUT", 600.0))
-_WORKER_SHUTDOWN_GRACE_S = 15.0
+# First (signal-free) shutdown grace. Fast workers exit in well under a
+# second and never notice this value — the join below returns as soon as
+# every process ends. It only matters for slow teardowns: DLO's shutdown
+# restore streams every block back to CPU (tens of GB per rank), which
+# routinely outlived the previous 15 s and made the executor terminate
+# workers mid-restore ("Cleanup failed while restoring a rank-local
+# block" on every DLO shutdown).
+_WORKER_SHUTDOWN_GRACE_S = 60.0
 _WORKER_TERMINATE_GRACE_S = 5.0
 _WORKER_KILL_GRACE_S = 5.0
 _RESULT_PUMP_JOIN_TIMEOUT_S = 2.0

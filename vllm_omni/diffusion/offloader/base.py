@@ -34,6 +34,15 @@ def run_cleanup_steps(steps: Iterable[tuple[str, Callable[[], None]]]) -> BaseEx
     for description, step in steps:
         try:
             step()
+        except SystemExit as exc:
+            # A shutdown signal interrupting a restore step is expected
+            # during teardown (the process is exiting anyway); with the
+            # worker-side deferral this is belt-and-braces. One line, no
+            # traceback, and still run the remaining steps.
+            logger.warning(
+                "Cleanup step '%s' interrupted by shutdown signal (exit "
+                "code %s); continuing with remaining steps",
+                description, exc.code)
         except BaseException as exc:
             logger.exception("Cleanup failed while %s", description)
             first_error = first_error or exc
