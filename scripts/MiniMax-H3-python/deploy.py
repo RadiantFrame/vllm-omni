@@ -34,6 +34,11 @@ Config knobs (env names = field names uppercased; defaults mirror 4rtx5090/deplo
                   (keys mirror vllm-omni's DiffusionCacheConfig), e.g.
                   '{"enable_taylorseer": true, "taylorseer_order": 2}'
   NUM_WEIGHT_LOAD_THREADS    (8)
+  LORA_PATH / LORA_BACKEND   preloaded LoRA ("" = none; backend e.g. "peft")
+  DIFFUSION_COMPILE_GRANULARITY  "regional" | "full"        ("regional")
+  ENFORCE_EAGER              1/0, skip torch.compile         (0)
+  GPU_MEMORY_UTILIZATION     0<x<=1, None = engine default  (unset)
+  ENABLE_DISTRIBUTED_LAYERWISE_OFFLOAD  1/0, DLO weight streaming (0)
   LOG / HEALTH_TIMEOUT_MIN   deployer-side knobs
 
 Every deploy also exports: VLLM_WORKER_MULTIPROC_METHOD=spawn,
@@ -240,6 +245,14 @@ class DeployConfig:
             diffusion_attention_backend=env("DIFFUSION_ATTENTION_BACKEND", "FLASH_ATTN"),
             quantization=env("QUANTIZATION", ""),
             enable_cpu_offload=env("ENABLE_CPU_OFFLOAD", "0") == "1",
+            lora_path=env("LORA_PATH", ""),
+            lora_backend=env("LORA_BACKEND", ""),
+            diffusion_compile_granularity=env(
+                "DIFFUSION_COMPILE_GRANULARITY", "regional"),
+            enforce_eager=env("ENFORCE_EAGER", "0") == "1",
+            gpu_memory_utilization=env("GPU_MEMORY_UTILIZATION", None, float),
+            enable_distributed_layerwise_offload=env(
+                "ENABLE_DISTRIBUTED_LAYERWISE_OFFLOAD", "0") == "1",
             cache_backend=env("CACHE_BACKEND", ""),
             cache_config=cache_config,
             log_path=env("LOG", "logs/deploy.log"),
