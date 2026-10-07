@@ -50,6 +50,7 @@ import json
 import os
 import signal
 import socket
+import warnings
 import subprocess
 import sys
 import time
@@ -146,6 +147,26 @@ class PipelineConfig:
     def __post_init__(self) -> None:
         if self.run_dir == "":      # normalize legacy "derive now" to lazy
             self.run_dir = None
+        # The dynamic-LoRA contract splits one artifact across two layers:
+        # deploy.lora_path preloads it into the server, generate.lora_path
+        # activates it per request. When both are set they must name the
+        # SAME file — a mismatch would load a second adapter at request
+        # time against the other artifact's sampling contract (steps /
+        # flow shift are validated per filename). Request-only (no preload)
+        # degrades to a first-request load, which works but pays the load
+        # latency inside the measured request: warn, don't fail.
+        deploy_lora = self.deploy_base.lora_path
+        gen_lora = self.generate_base.lora_path
+        if deploy_lora and gen_lora and deploy_lora != gen_lora:
+            raise ValueError(
+                f"deploy.lora_path and generate.lora_path must name the "
+                f"same artifact (deploy preloads it, the request activates "
+                f"it): got {deploy_lora!r} vs {gen_lora!r}")
+        if gen_lora and not deploy_lora:
+            warnings.warn(
+                f"generate.lora_path ({gen_lora!r}) has no matching "
+                "deploy.lora_path: the adapter will be loaded at request "
+                "time instead of preloaded", stacklevel=2)
 
     def ensure_run_dir(self) -> str:
         """Claim the timestamped directory (idempotent) and return it."""
