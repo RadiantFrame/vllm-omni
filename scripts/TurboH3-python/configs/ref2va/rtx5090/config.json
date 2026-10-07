@@ -1,0 +1,35 @@
+{
+  "deploy": {
+    "model": "/data/models/modelscope/MiniMax/MiniMax-H3/Ref2VA",
+    "task_type": "ref2va",
+    "lora_backend": "peft",
+    "lora_path": "/data/models/modelscope/lightx2v/Minimax-h3-Turbo/minimax_h3_ref2v_turbo_4step_v0.1_bf16.safetensors",
+    "port": 9000,
+    "cuda_visible_devices": "0,1,2,3,4,5,6,7",
+    "tensor_parallel_size": 8,
+    "num_weight_load_threads": 1,
+    "diffusion_attention_backend": "CUDNN_ATTN",
+    "quantization": "fp8",
+    "enable_cpu_offload": false,
+    "cache_backend": "",
+    "enable_distributed_layerwise_offload": true,
+    "enforce_eager": true
+  },
+  "generate": {
+    "rounds": 5,
+    "seed": "0",
+    "task": "ref2va",
+    "duration": 15,
+    "num_inference_steps": 4,
+    "flow_shift": 12,
+    "audio_flow_shift": 3.0,
+    "short_edge": 768,
+    "aspect_ratio": "16:9",
+    "input_dir": "/data/jw/workspace/vllm-omni/inputs/r2va-omni",
+    "use_context_ir_prompt": true,
+    "lora_path": "/data/models/modelscope/lightx2v/Minimax-h3-Turbo/minimax_h3_ref2v_turbo_4step_v0.1_bf16.safetensors",
+    "lora_name": "h3-turbo-ref2v-v0.1",
+    "lora_scale": 1.0
+  },
+  "warmup": 3
+}
