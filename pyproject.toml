@@ -169,6 +169,14 @@ include = ["vllm_omni*"]
 [tool.setuptools_scm]
 # no extra settings needed, presence enables setuptools-scm
 
+[tool.setuptools_scm.tag]
+# This fork carries its own paprika-engine/vX.Y.Z release tags alongside
+# upstream v* tags; restrict version derivation to the upstream namespace
+# so the package version keeps tracking the official releases. The prefix
+# feeds git describe --match (v*[0-9]*), filtering paprika tags out before
+# tag parsing — anything else either hijacks or crashes the derivation.
+prefix = "v"
+
 [tool.ruff]
 line-length = 120
 exclude = [
