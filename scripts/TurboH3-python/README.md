@@ -49,14 +49,32 @@ quality-sensitive work.
 
 ## Measured performance (8x RTX 5090, all 5/5 rounds zero-error)
 
+**Speed tier — `configs_4steps/`** (4-step v0.1, `flow_shift` 12; t2va
+and ref2va in `configs/` still run this artifact until the quality tier
+is adopted):
+
 | Preset | LoRA artifact | Profile | Output | Steady e2e | vs base 50-step |
 |---|---|---|---|---|---|
-| `configs/t2va/rtx5090` | `minimax_h3_fl2v_turbo_4step_v0.1` | TP4/USP2 · fp8 · SAGE · eager, no offload | 1344x768 / 124 f / 24 fps | **~15.4 s** | ~142 s -> **9.2x** |
-| `configs/fl2va/rtx5090` | `minimax_h3_fl2v_turbo_4step_v0.1` | TP4/USP2 · fp8 · SAGE · eager, no offload | 1344x768 / 124 f / 24 fps | **~17.1 s** | ~56 s -> **3.3x** |
-| `configs/ref2va/rtx5090` | `minimax_h3_ref2v_turbo_4step_v0.1_bf16` | TP4/USP2 · fp8 · SAGE · eager · **DLO** | 1344x768 / 362 f / 24 fps | **~218 s** | 1072 s -> **4.9x** |
+| t2va | `minimax_h3_fl2v_turbo_4step_v0.1` | TP4/USP2 · fp8 · SAGE · eager, no offload | 1344x768 / 124 f / 24 fps | **~15.4 s** | ~142 s -> **9.2x** |
+| fl2va | `minimax_h3_fl2v_turbo_4step_v0.1` | TP4/USP2 · fp8 · SAGE · eager, no offload | 1344x768 / 124 f / 24 fps | **~16.9 s** | ~56 s -> **3.3x** |
+| ref2va | `minimax_h3_ref2v_turbo_4step_v0.1_bf16` | TP4/USP2 · fp8 · SAGE · eager · **DLO** | 1344x768 / 362 f / 24 fps | **~218 s** | 1072 s -> **4.9x** |
 
-Log evidence: `logs/20261007-184350` (t2va), `logs/20261007-183025`
-(fl2va), `logs/20261007-185128` (ref2va).
+**Quality tier — `configs/`** (8-step artifacts, each with its own
+sampler contract; the artifact's filename validation rejects requests
+carrying another tier's steps/shift):
+
+| Preset | LoRA artifact | Profile | Output | Steady e2e | vs base / vs speed tier |
+|---|---|---|---|---|---|
+| fl2va | `minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16` | TP4/USP2 · fp8 · SAGE · eager, no offload | 1344x768 / 124 f / 24 fps | **~29.0 s** | ~56 s -> **1.9x** / 1.71x the 4-step |
+
+Log evidence — speed tier: `logs/20261007-184350` (t2va),
+`logs/20261009-092443` (fl2va, same-day A/B), `logs/20261007-185128`
+(ref2va); quality tier: `logs/20261009-091529` (fl2va 8-step, after
+the contract fix documented in `logs/20261009-085040`).
+
+The tiers' visual quality difference is unmeasured — the 8-step costs
+1.71x denoise time on fl2va; adopt per-task only after a same-seed
+visual A/B says the gain is visible.
 
 ref2va tuning ladder (same 15 s input, each step measured): base
 1072 s -> 478 s (Turbo + DLO + CUDNN) -> 316 s (SAGE, after the torch
