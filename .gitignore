@@ -247,7 +247,7 @@ datasets/
 !apps/ComfyUI-vLLM-Omni/example_workflows/*.json
 !tests/assets/soulxsinger/*.json
 !scripts/MiniMax-H3-python/configs/**/*.json
-!scripts/TurboH3-python/configs/**/*.json
+!scripts/TurboH3-python/configs*/**/*.json
 # Omni-DuplexEval CI config JSON (e.g. accuracy/omni_duplex_eval)
 !tests/e2e/accuracy/omni_duplex_eval/*.json
 *.jsonl
