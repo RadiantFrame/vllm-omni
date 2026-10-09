@@ -44,7 +44,7 @@ cat > ~/.cargo/config.toml <<'EOF'
 git-fetch-with-cli = true
 EOF
 
-uv pip install vllm==0.26.0
+uv pip install vllm==0.30.0
 
 # from source
 # change [[tool.uv.index]] from default to "https://pypi.tuna.tsinghua.edu.cn/simple"?
