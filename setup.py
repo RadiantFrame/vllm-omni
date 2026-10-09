@@ -14,6 +14,24 @@ from pathlib import Path
 from setuptools import setup
 from setuptools_scm import get_version
 
+# Restrict version derivation to the upstream v* tag namespace: this fork
+# carries paprika-engine/vX.Y.Z release tags alongside upstream v* tags, and
+# HEAD is usually tagged with the paprika one, which the default tag regex
+# cannot parse (it contains a "/"). This pin can only live here — the
+# get_version() Python API ignores [tool.setuptools_scm] since setuptools-scm
+# 10, and the setuptools build hook never re-derives the version because
+# setup.py passes it explicitly — so pyproject.toml cannot express it.
+GIT_DESCRIBE_COMMAND = [
+    "git",
+    "describe",
+    "--dirty",
+    "--tags",
+    "--long",
+    "--abbrev=40",
+    "--match",
+    "v*[0-9]*",
+]
+
 
 def uninstall_onnxruntime() -> None:
     """
@@ -146,7 +164,7 @@ def get_vllm_omni_version() -> str:
     else:
         # Generate version from git tags via setuptools_scm (without writing yet)
         try:
-            version = get_version()
+            version = get_version(git_describe_command=GIT_DESCRIBE_COMMAND)
         except Exception as e:
             print(f"Warning: Failed to get version from git, using fallback: {e}")
             version = "dev"
