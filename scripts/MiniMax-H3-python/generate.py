@@ -334,6 +334,36 @@ class GenerateConfig:
             })
         return form
 
+    def build_cmd(self, port: int | None = None,
+                  out_path: str | None = "video.mp4") -> list[str]:
+        """config -> curl CLI reproducing _post_one's request (single source
+        of truth for the CLI view of the request surface; the form fields
+        themselves come from build_form(), so the two can never drift).
+
+        Targets the first port by default — the fan-out sends the SAME
+        request to every port, so one command documents the whole run.
+        out_path defaults to "video.mp4" (curl without -o dumps the MP4
+        binary to the terminal); pass None to omit -o, or a path to land
+        the video somewhere specific. Replays overwrite in place.
+        """
+        cmd = ["curl", "-X", "POST",
+               f"http://{self.host}:{port if port is not None else self.ports[0]}"
+               f"/v1/videos/sync"]
+        for key, value in self.build_form().items():
+            cmd += ["-F", f"{key}={value}"]
+        # Repeated file field per reference, mirroring _post_one: field name
+        # and MIME follow the task (fl2va/t2va -> "input_reference" image
+        # frames; ref2va -> "input_references" mixed modalities). curl's
+        # ;type= pins the MIME the same way requests' files= tuple does.
+        field = "input_references" if self.task == "ref2va" \
+            else "input_reference"
+        for p in self.ref_files:
+            mime = mimetypes.guess_type(p)[0] or "image/png"
+            cmd += ["-F", f"{field}=@{p};type={mime}"]
+        if out_path is not None:
+            cmd += ["-o", out_path]
+        return cmd
+
     def out_path(self, rnd: int, svc: int, port: int) -> str:
         return os.path.join(
             self.out_dir,
