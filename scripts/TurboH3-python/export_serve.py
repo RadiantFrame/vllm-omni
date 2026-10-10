@@ -13,7 +13,9 @@ without the python wrapper. The rendering lives on the Config classes:
 Usage (from the repo root):
     python scripts/TurboH3-python/export_serve.py \
         --config scripts/TurboH3-python/configs/fl2va/rtx5090/config.json
-    # writes deploy.sh + generate.sh into --out_dir (default ./export)
+    # writes scripts/TurboH3-python/paprika/fl2va/rtx5090/{deploy,generate}.sh
+    # — the config path with its configs* segment swapped for paprika/;
+    # --out_dir overrides this derivation.
 """
 
 import argparse
@@ -28,14 +30,35 @@ from deploy import DeployConfig  # noqa: E402
 from generate import GenerateConfig  # noqa: E402
 from pipeline import _read_config_doc  # noqa: E402
 
+HERE = Path(__file__).resolve().parent
+
+
+def _default_out_dir(config: str) -> str | None:
+    """configs/fl2va/rtx5090/config.json -> <here>/paprika/fl2va/rtx5090.
+
+    The config path's first configs* segment is renamed paprika* —
+    keeping the suffix so sibling tiers don't collide (configs_4steps
+    exports to paprika_4steps/); everything below it except the file
+    name is kept. None when the path holds no configs* segment (the
+    caller must pass --out_dir).
+    """
+    parts = os.path.abspath(config).split(os.sep)
+    for i, part in enumerate(parts):
+        if part == "configs" or part.startswith("configs_"):
+            tier = "paprika" + part[len("configs"):]
+            return str(HERE.joinpath(tier, *parts[i + 1:-1]))
+    return None
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--config", required=True, metavar="FILE",
                         help="pipeline config file (JSON), same as pipeline.py")
-    parser.add_argument("--out_dir", default="./export", metavar="DIR",
-                        help="directory to write deploy.sh / generate.sh "
-                             "into (default: ./export)")
+    parser.add_argument("--out_dir", default=None, metavar="DIR",
+                        help="directory to write deploy.sh / generate.sh into "
+                             "(default: scripts/TurboH3-python/paprika/<task>/"
+                             "<hw>/ — the config path with its configs* "
+                             "segment swapped for paprika/)")
     args = parser.parse_args()
 
     try:
@@ -48,10 +71,16 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    os.makedirs(args.out_dir, exist_ok=True)
+    out_dir = args.out_dir or _default_out_dir(args.config)
+    if out_dir is None:
+        print(f"ERROR: {args.config} is not under a configs*/ directory; "
+              f"pass --out_dir explicitly", file=sys.stderr)
+        return 1
+
+    os.makedirs(out_dir, exist_ok=True)
     for name, text in (("deploy.sh", deploy_cfg.export_sh()),
                        ("generate.sh", gen_cfg.export_sh())):
-        path = os.path.join(args.out_dir, name)
+        path = os.path.join(out_dir, name)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
         os.chmod(path, 0o755)
