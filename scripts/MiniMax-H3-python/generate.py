@@ -69,6 +69,7 @@ import json
 import dataclasses
 import mimetypes
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -363,6 +364,30 @@ class GenerateConfig:
         if out_path is not None:
             cmd += ["-o", out_path]
         return cmd
+
+    def export_sh(self) -> str:
+        """config -> single-request bash script (generate.sh).
+
+        build_cmd()'s curl, one flag per line; only the baked prompt text
+        is swapped for a $PROMPT variable read from the case file, keeping
+        the exported script readable. No -o: the caller adds its own out
+        file and status sidecar. The -F fields come straight from
+        build_form() (via build_cmd), so the script cannot drift from the
+        python driver.
+        """
+        cmd = self.build_cmd(out_path=None)
+        flag_lines = []
+        for i in range(4, len(cmd), 2):
+            value = cmd[i + 1]
+            if cmd[i] == "-F" and value.startswith("prompt="):
+                flag_lines.append('  -F "prompt=${PROMPT}"')
+            else:
+                flag_lines.append(f"  {cmd[i]} {shlex.quote(value)}")
+        body = " \\\n".join(flag_lines)
+        return f"""#!/usr/bin/env bash
+{cmd[0]} -sS {cmd[1]} {cmd[2]} {shlex.quote(cmd[3])} \\
+{body}
+"""
 
     def out_path(self, rnd: int, svc: int, port: int) -> str:
         return os.path.join(

@@ -355,6 +355,40 @@ class DeployConfig:
         env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
         return env
 
+    def export_sh(self) -> str:
+        """config -> foreground service script (deploy.sh).
+
+        The bash view of this config: build_env()'s exports plus
+        build_cmd()'s `vllm serve` command, one flag per line. The command
+        comes from build_cmd(), so the script cannot drift from the python
+        driver; run it foreground, Ctrl-C stops the service.
+        """
+        env = self.build_env()
+        return f"""#!/usr/bin/env bash
+export CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']}
+
+export VLLM_WORKER_MULTIPROC_METHOD={env['VLLM_WORKER_MULTIPROC_METHOD']}
+export VLLM_OMNI_VIDEO_SYNC_TIMEOUT={env['VLLM_OMNI_VIDEO_SYNC_TIMEOUT']}
+export PYTORCH_CUDA_ALLOC_CONF={env['PYTORCH_CUDA_ALLOC_CONF']}
+
+{_format_serve_cmd(self.build_cmd())}
+"""
+
+
+def _format_serve_cmd(cmd: list[str]) -> str:
+    """build_cmd() token list -> multi-line `vllm serve ... \\ ...` text."""
+    lines = [f"vllm serve {shlex.quote(cmd[2])}"]
+    i = 3
+    while i < len(cmd):
+        tok = cmd[i]
+        if i + 1 < len(cmd) and not cmd[i + 1].startswith("--"):
+            lines.append(f"  {tok} {shlex.quote(cmd[i + 1])}")
+            i += 2
+        else:
+            lines.append(f"  {tok}")
+            i += 1
+    return " \\\n".join(lines)
+
 
 def _workers_left() -> list[str]:
     try:
