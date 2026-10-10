@@ -95,3 +95,30 @@ downgrading re-breaks the bmm ABI), serial shard loading
 (`num_weight_load_threads: 1`), `enforce_eager` (regional compile's
 first request deterministically OOMs on these memory-tight profiles),
 DLO only where the packing needs weight streaming (ref2va).
+
+## Serve (8x RTX 5090)
+
+The pipeline split open for interactive use: same config file, service
+and traffic in two terminals.
+
+### run_deploy.py — the service, foreground
+
+```bash
+python scripts/TurboH3-python/run_deploy.py --config scripts/TurboH3-python/configs_4steps/fl2va/rtx5090/config.json
+```
+
+Reads only the config's `deploy` section and launches the service by
+`os.execvpe` — the script's process is REPLACED by `vllm serve` (no
+Popen child): logs stream to this terminal, Ctrl-C stops the service,
+and its exit code becomes the script's.
+
+### run_generate.py — one request against the live service
+
+```bash
+python scripts/TurboH3-python/run_generate.py --config scripts/TurboH3-python/configs_4steps/fl2va/rtx5090/config.json
+```
+
+Reads the `generate` section — the request is pinned at the same
+config's deploy port (`--port` overrides) — and posts ONE request (no
+rounds fan-out, no metrics), writing the video to `--out_path`
+(default `./outputs/video.mp4`).
