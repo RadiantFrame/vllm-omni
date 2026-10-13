@@ -1,8 +1,11 @@
 # TurboH3-python
 
 LightX2V Turbo few-step LoRA students of MiniMax-H3, deployed through
-the dynamic LoRA route and reusing the MiniMax-H3-python pipeline
-(`pipeline.py` here is a thin import wrapper).
+the dynamic LoRA route. This directory holds presets and documentation
+only: the tools live in MiniMax-H3-python and are fully config-driven
+— every Turbo-specific behavior (lora_backend/lora_path, step/shift
+contracts, DLO) is a config key, so the shared pipeline and
+export_serve run these presets as-is.
 
 ## What differs from MiniMax-H3-python
 
@@ -86,9 +89,13 @@ streaming.
 ## Run (8x RTX 5090)
 
 ```bash
-python scripts/TurboH3-python/pipeline.py \
+python scripts/MiniMax-H3-python/pipeline.py \
   --config scripts/TurboH3-python/configs/<t2va|fl2va|ref2va>/rtx5090/config.json
 ```
+
+Interactive pair (export as bash, two terminals): `export_serve.py`
+from the same tool directory, pointed at the same config — outputs
+land beside the config tree (`configs*` -> `paprika*` in place).
 
 Common profile: fp8 weights, SAGE_ATTN (torch 2.13.0+cu130 pinned —
 downgrading re-breaks the bmm ABI), serial shard loading
