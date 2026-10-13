@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Export a pipeline config as two shell scripts: deploy + generate.
+
+Given a pipeline config file (the same JSON pipeline.py takes), export
+the run as plain bash so it can be read, tweaked and run without the
+python wrapper. The rendering lives on the Config classes:
+
+    DeployConfig.export_sh()    -> deploy.sh: the env exports + the
+                                   `vllm serve` command, flag per line.
+    GenerateConfig.export_sh()  -> generate.sh: build_cmd()'s curl, one
+                                   -F flag per line, prompt in $PROMPT.
+
+Usage (from the repo root):
+    python scripts/MiniMax-H3-python/export_serve.py \
+        --config scripts/MiniMax-H3-python/configs/fl2va/rtx5090/config.json
+    # writes scripts/MiniMax-H3-python/paprika/fl2va/rtx5090/{deploy,generate}.sh
+    # — the config path with its configs* segment swapped for paprika*/;
+    # --out_dir overrides this derivation.
+"""
+
+import argparse
+import dataclasses
+import os
+import sys
+
+from deploy import DeployConfig  # noqa: E402
+from generate import GenerateConfig  # noqa: E402
+from pipeline import _read_config_doc  # noqa: E402
+
+
+def _default_out_dir(config: str) -> str | None:
+    """.../configs/fl2va/rtx5090/config.json -> .../paprika/fl2va/rtx5090.
+
+    The config path's first configs* segment is renamed paprika* in
+    place — keeping the suffix so sibling tiers don't collide
+    (configs_4steps exports to paprika_4steps/); everything below it
+    except the file name is kept. None when the path holds no configs*
+    segment (the caller must pass --out_dir).
+    """
+    parts = os.path.abspath(config).split(os.sep)
+    for i, part in enumerate(parts):
+        if part == "configs" or part.startswith("configs_"):
+            tier = "paprika" + part[len("configs"):]
+            return os.path.join(os.sep, *parts[:i], tier, *parts[i + 1:-1])
+    return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--config", required=True, metavar="FILE",
+                        help="pipeline config file (JSON), same as pipeline.py")
+    parser.add_argument("--out_dir", default=None, metavar="DIR",
+                        help="directory to write deploy.sh / generate.sh into "
+                             "(default: the config path with its configs* "
+                             "segment swapped for paprika*/)")
+    args = parser.parse_args(argv)
+
+    try:
+        doc = _read_config_doc(args.config)
+        deploy_cfg = DeployConfig.from_config(doc.get("deploy", {}))
+        gen_cfg = GenerateConfig.from_config(doc.get("generate", {}))
+        # Pin the traffic at the service this config deploys.
+        gen_cfg = dataclasses.replace(gen_cfg, ports=[deploy_cfg.port])
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    out_dir = args.out_dir or _default_out_dir(args.config)
+    if out_dir is None:
+        print(f"ERROR: {args.config} is not under a configs*/ directory; "
+              f"pass --out_dir explicitly", file=sys.stderr)
+        return 1
+
+    os.makedirs(out_dir, exist_ok=True)
+    for name, text in (("deploy.sh", deploy_cfg.export_sh()),
+                       ("generate.sh", gen_cfg.export_sh())):
+        path = os.path.join(out_dir, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.chmod(path, 0o755)
+        print(f"[export] wrote {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
