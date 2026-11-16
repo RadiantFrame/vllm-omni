@@ -1578,6 +1578,10 @@ class TestExecutorShutdownCleaner:
     def test_worker_joins_share_one_global_deadline(self, monkeypatch):
         from vllm_omni.diffusion.executor import multiproc_executor as executor_module
 
+        # Pin the production grace: paprika-engine raises the default to 60 s
+        # for slow DLO block restores; the mock timeline below assumes 15 s.
+        monkeypatch.setattr(executor_module, "_WORKER_SHUTDOWN_GRACE_S", 15.0)
+
         class FakeProcess:
             def __init__(self, name):
                 self.name = name
@@ -1660,6 +1664,10 @@ class TestExecutorShutdownCleaner:
     @pytest.mark.parametrize("failed_action", ["terminate", "kill"])
     def test_kill_phase_shares_deadline_and_continues_after_os_errors(self, monkeypatch, failed_action):
         from vllm_omni.diffusion.executor import multiproc_executor as executor_module
+
+        # Pin the production grace: paprika-engine raises the default to 60 s
+        # for slow DLO block restores; the mock timeline below assumes 15 s.
+        monkeypatch.setattr(executor_module, "_WORKER_SHUTDOWN_GRACE_S", 15.0)
 
         first, second = Mock(pid=101), Mock(pid=102)
         first.name, second.name = "first", "second"
