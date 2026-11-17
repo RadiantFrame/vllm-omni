@@ -60,7 +60,7 @@ Notes:
   "input_reference" image fields; ref2va repeats "input_references" fields
   whose modality the server detects from each file's MIME type.
 - Per-request wall time is measured client-side (in addition to the
-  server-side e2e_total_ms you can grep from service logs).
+  server-side [OmniTiming] total= lines in the service log).
 """
 
 from __future__ import annotations
@@ -580,7 +580,7 @@ class Generator:
         print(f"All done: {cfg.rounds} rounds x {len(cfg.ports)} service(s). "
               f"Outputs in {cfg.out_dir}/ "
               f"({cfg.task}_r<R>_svc<N>_...)")
-        print("Read steady-state e2e_total_ms from each service log from "
+        print("Read steady-state [OmniTiming] total from each service log from "
               "round ~3 onward (rounds 1-2 are warmup/settling).")
         return True
 

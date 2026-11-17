@@ -6,16 +6,19 @@ The pipeline's third phase (deploy -> generate -> METRICS) lives here:
 run_dir/metrics.json. Its current source is the service log via
 `LogParser`:
 
-  latency    steady-state e2e_total_ms per request (rounds 1-2 are compile
-             warmup / lazy-init settling and are excluded by default),
-             plus the attribution fields from the same stats tables
+  latency    per-request [OmniTiming] lines; the summary keys reuse the
+             line's own field names (total/engine, seconds). Steady-state
+             aggregation drops the leading warmup rounds (1-2 by default)
   cache-dit  executed/cached steps and residual-diff percentiles per request
   resources  model-load time/GiB, per-worker GPU memory after load
   failures   FATAL / Traceback / OOM / health-timeout occurrences
 
-Future metric families plug into Metrics.collect() as additional sources
-over the run artifacts — e.g. visual quality (SSIM/PSNR/FVD over
-run_dir/outputs/*.mp4) — feeding the same summary dict.
+The per-request stats tables (RequestE2EStats / StageRequestStats) are
+DEBUG-only upstream; this parser intentionally does NOT depend on them.
+Anything they used to carry (denoise_step_latency_ms, postprocess_time_s,
+shape_check) is not extractable from [OmniTiming] and was dropped —
+validate run shape from config.json and ffprobe over the output mp4s
+instead.
 
 Usage:
   python metrics.py [LOG_PATH] [--warmup N] [--json]
@@ -37,9 +40,7 @@ DEFAULT_LOG = "logs/deploy.log"
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-# | e2e_total_ms | 357,795.117 |      (RequestE2EStats / StageRequestStats rows)
-STATS_ROW_RE = re.compile(r"\|\s*([a-z_0-9]+)\s*\|\s*([0-9.,\-]+)\s*\|")
-REQ_ID_RE = re.compile(r"request_id=([^\]]+)\]")
+# [OmniTiming] req=video_sync-... total=594.30s engine=594.30s stages=[0:594.30s]
 OMNI_TIMING_RE = re.compile(
     r"\[OmniTiming\] req=\S+ total=([0-9.]+)s engine=([0-9.]+)s")
 
@@ -62,10 +63,6 @@ FAILURE_PATTERNS = ("FATAL", "Traceback (most recent call last)",
                     "launcher exited")
 
 
-def _num(s: str) -> float:
-    return float(s.replace(",", ""))
-
-
 class LogParser:
     """Parses one service log; summarize() extracts the metric summary.
 
@@ -75,8 +72,7 @@ class LogParser:
 
     def __init__(self, path: str):
         self.path = path
-        self.requests: list[dict] = []     # one entry per video_sync request
-        self.omni_timings: list[tuple[float, float]] = []
+        self.omni_timings: list[tuple[float, float]] = []  # (total_s, engine_s)
         self.cache_dit: list[dict] = []
         self.model_load_gib: list[float] = []
         self.model_load_seconds: list[float] = []
@@ -90,23 +86,7 @@ class LogParser:
         with open(self.path, encoding="utf-8", errors="replace") as fh:
             lines = [ANSI_RE.sub("", ln.rstrip("\n")) for ln in fh]
 
-        cur: dict | None = None            # request table under construction
-        cur_fields: dict[str, float] = {}
-
         for ln in lines:
-            m = REQ_ID_RE.search(ln)
-            if m and "RequestE2EStats" in ln:
-                # New request: the E2E table opens it, the StageRequestStats
-                # table that follows (same request_id) attaches to it.
-                if cur is not None:
-                    cur.update(cur_fields)
-                cur = {"request_id": m.group(1)}
-                cur_fields = {}
-                self.requests.append(cur)
-                continue
-            # Cache-DiT rows FIRST: their numeric data row also matches the
-            # generic stats-row pattern below, and must not be swallowed by
-            # a still-open request table.
             m = CACHE_STATS_RE.search(ln)
             if m:
                 self.cache_dit.append({
@@ -124,19 +104,10 @@ class LogParser:
                                       "min", "max"), row):
                     stats[f"residual_{name}"] = val
                 continue
-            m = STATS_ROW_RE.search(ln)
-            if m and cur is not None and "+---" not in ln:
-                key, val = m.groups()
-                if key in ("Field", "Value"):
-                    continue
-                try:
-                    cur_fields[key] = _num(val)
-                except ValueError:
-                    pass
-                continue
             m = OMNI_TIMING_RE.search(ln)
             if m:
                 self.omni_timings.append((float(m.group(1)), float(m.group(2))))
+                continue
             m = MODEL_LOAD_RE.search(ln)
             if m:
                 self.model_load_gib.append(float(m.group(1)))
@@ -151,44 +122,33 @@ class LogParser:
                     self.failures.append(ln.strip())
                     break
 
-        if cur is not None:
-            cur.update(cur_fields)
         return self
 
     # -- summarizing ----------------------------------------------------------
 
     def summarize(self, warmup: int = 2) -> dict:
         """Steady-state metric summary (leading `warmup` requests dropped)."""
-        reqs = self.requests
-        e2e_all = [r["e2e_total_ms"] for r in reqs if "e2e_total_ms" in r]
+        e2e_all = [round(total, 2) for total, _ in self.omni_timings]
         steady = e2e_all[warmup:]
         out: dict = {
-            "num_requests": len(reqs),
+            "num_requests": len(self.omni_timings),
             "warmup_excluded": min(warmup, len(e2e_all)),
             "failures": len(self.failures),
             "failure_samples": self.failures[:5],
         }
         if steady:
-            out["e2e_total_ms"] = {
-                "steady_mean": round(statistics.mean(steady), 1),
-                "steady_median": round(statistics.median(steady), 1),
-                "steady_min": round(min(steady), 1),
-                "steady_max": round(max(steady), 1),
+            out["total"] = {
+                "steady_mean": round(statistics.mean(steady), 2),
+                "steady_median": round(statistics.median(steady), 2),
+                "steady_min": round(min(steady), 2),
+                "steady_max": round(max(steady), 2),
                 "steady_count": len(steady),
-                "all": [round(v, 1) for v in e2e_all],
+                "all": e2e_all,
             }
-        # Attribution fields, averaged over the same steady window.
-        for field in ("denoise_step_latency_ms", "diffusion_engine_exec_time_s",
-                      "diffusion_engine_total_time_s", "postprocess_time_s"):
-            vals = [r[field] for r in reqs[warmup:] if field in r]
-            if vals:
-                out[field] = round(statistics.mean(vals), 1)
-        # Sanity fields from the last request: confirm the request shape.
-        if reqs:
-            last = reqs[-1]
-            out["shape_check"] = {k: last.get(k) for k in
-                                  ("resolution", "num_inference_steps",
-                                   "image_num", "audio_duration_s")}
+        # [OmniTiming] engine = total - preprocess; steady-window average.
+        engine_vals = [engine for _, engine in self.omni_timings[warmup:]]
+        if engine_vals:
+            out["engine"] = round(statistics.mean(engine_vals), 2)
         # Cache-DiT: average across the per-request summaries.
         if self.cache_dit:
             def avg(key: str) -> float | None:
@@ -262,20 +222,16 @@ def main() -> int:
 
     print(f"=== {args.log_path} ===")
     print(f"requests parsed: {summary['num_requests']} "
-          f"(steady: {summary.get('e2e_total_ms', {}).get('steady_count', 0)}, "
+          f"(steady: {summary.get('total', {}).get('steady_count', 0)}, "
           f"warmup excluded: {summary['warmup_excluded']})")
-    if "e2e_total_ms" in summary:
-        e = summary["e2e_total_ms"]
-        print(f"e2e_total_ms steady: mean={e['steady_mean']} "
-              f"median={e['steady_median']} min={e['steady_min']} "
-              f"max={e['steady_max']}")
+    if "total" in summary:
+        e = summary["total"]
+        print(f"total steady: mean={e['steady_mean']}s "
+              f"median={e['steady_median']}s min={e['steady_min']}s "
+              f"max={e['steady_max']}s")
         print(f"  per-round: {e['all']}")
-    for k in ("denoise_step_latency_ms", "diffusion_engine_exec_time_s",
-              "diffusion_engine_total_time_s", "postprocess_time_s"):
-        if k in summary:
-            print(f"{k} (steady avg): {summary[k]}")
-    if "shape_check" in summary:
-        print(f"shape check: {summary['shape_check']}")
+    if "engine" in summary:
+        print(f"engine (steady avg): {summary['engine']}s")
     if "cache_dit" in summary:
         print(f"cache-dit: {summary['cache_dit']}")
     if "model_load" in summary:

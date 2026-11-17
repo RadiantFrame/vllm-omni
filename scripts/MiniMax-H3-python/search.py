@@ -213,10 +213,10 @@ class Search:
             self.results.append(row)
             with open(self.cfg.index_path, "a") as fh:
                 fh.write(json.dumps(row) + "\n")
-            summary = (row["metrics"].get("e2e_total_ms", {}).get("steady_mean")
+            summary = (row["metrics"].get("total", {}).get("steady_mean")
                        if row.get("ok") else row.get("error", "FAILED"))
             print(f"[search] run {i}/{total} done: ok={row['ok']} "
-                  f"e2e_steady_mean_ms={summary}\n")
+                  f"total_steady_mean_s={summary}\n")
         return self.results
 
 
