@@ -17,10 +17,18 @@
 git status --short                 # 工作区必须干净
 git branch --show-current          # 确认在 paprika-engine
 git fetch origin                   # 拿最新 main
+git fetch origin --tags            # 拿远端 tag(不带则 setuptools_scm 版本号锚点过期,
+                                    #  editable 安装后 __version__ 停留在旧 tag 的 devN,
+                                    #  并触发 vLLM-Omni vs vLLM 版本不匹配警告)
 git rev-list --left-right --count paprika-engine...origin/main   # 看 ahead/behind
 ```
 
 有未提交改动时先 commit 或 stash,不要带脏工作区进 merge。
+
+> merge 后如果 `python -c "import vllm_omni; print(vllm_omni.__version__)"`
+> 报出的版本仍停留在旧 tag(如 `0.29.0rc2.devN`),说明 tag 没跟上:
+> 补 `git fetch origin --tags` 后重新 `VIRTUAL_ENV=$PWD/.venv uv pip install -e .`
+> 重新生成 `_version.py`。该差异只影响显示与告警,不影响功能。
 
 ## 第 1 步 · 打安全网 tag
 
@@ -102,6 +110,57 @@ git push rf paprika-engine
 
 此时开 `sync/paprika-<日期>` 分支做 merge,验证通过后 `git merge --ff-only` 或
 cherry-pick 该 merge commit 回 paprika-engine。其余情况一律直 merge。
+
+## 附录:merge 前后行为差异的 A/B 对照环境(pre/post 双 venv)
+
+merge 后出现「merge 前没这个问题」类争议时,唯一有说服力的证据是**两边代码
+各自在原生环境里跑同一命令**。merge 前后代码依赖的 vllm 大版本不同(本次:
+pre 需要 0.30.0,post 需要 0.33.0),**不能共用一个 venv**,也不要在主
+`.venv` 里来回升降级——实测会把 15 个包连拖下来(含 torch 2.14.0+cu130 →
+2.13.0,丢 +cu130 变体),且源码编译的 SageAttention 对 torch ABI 敏感,
+降级后需重编。正确做法是按 `scripts/RadiantFrame/rtx5090/create_env.sh`
+的配方**另建一个独立 venv**(rust/cargo 仅源码编 vllm 才需要,装 wheel 可跳过):
+
+```bash
+# ① 切到 pre-merge 锚点(editable 安装指向工作区,必须先切再装)
+git checkout paprika-pre-sync-YYYYMMDD
+
+# ② 建 pre 环境(aliyun 源;--seed 才有 pip)
+export UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+uv venv .venv-premerge --python 3.12 --seed
+VIRTUAL_ENV=$PWD/.venv-premerge uv pip install vllm==0.30.0
+VIRTUAL_ENV=$PWD/.venv-premerge uv pip install -e .
+
+# ③ SageAttention 源码编译(nvcc 用 CUDA 13.0)
+export CUDA_HOME=/usr/local/cuda-13.0 PATH=/usr/local/cuda-13.0/bin:$PATH
+VIRTUAL_ENV=$PWD/.venv-premerge uv pip install \
+  git+https://github.com/thu-ml/SageAttention.git --no-build-isolation
+
+# ④ 用 pre 环境跑同一命令(deploy.py 从 PATH 解析 vllm,先 activate)
+source .venv-premerge/bin/activate
+python scripts/MiniMax-H3-python/pipeline.py --config <同一份 config>
+
+# ⑤ 测完切回并重新生成版本文件(见下方坑 1)
+git checkout paprika-engine
+VIRTUAL_ENV=$PWD/.venv uv pip install -e .
+```
+
+实测记录(2026-11-16/17,ref2va/rtx5090,50 步):pre 5/5 轮 ~1070s/轮;
+post(修复 #7745 超时回归后)5/5 轮 ~572s/轮,端到端 1.87×。对比时读 tqdm
+逐步耗时(区分缓存步/计算步)+ 客户端每轮耗时,稳态取第 3 轮以后。
+
+**踩过的坑:**
+
+1. **editable 安装会把 `_version.py` 写进源码树**——在 pre-merge checkout 上
+   `install -e .` 后,切回 paprika-engine 时 `_version.py` 留着过期版本号
+   (gitignored 不随 checkout 恢复)。切回后必须从当前 checkout 重新
+   `uv pip install -e .` 重新生成;
+2. **单元测试可能泄漏真实 DiffusionWorker 进程**(每 rank ~3GB 显存,SIGTERM
+   无效需 `kill -9`),A/B 实测前先 `nvidia-smi --query-compute-apps=pid` 检查;
+3. pre-merge 代码在 post 环境(vllm 0.33)里**连 import 都过不了**(如
+   `RoutedExpertsLists` 已移除),反之亦然——跑挂时先分辨是环境不匹配还是
+   真回归,别急着归因;
+4. 每个额外 venv 约 7GB 磁盘,定位完成后可整目录删除。
 
 ## 速查卡
 
