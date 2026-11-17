@@ -652,7 +652,9 @@ class TestRequestModeDispatch:
         result = executor.execute_request(_make_sched_output("A"))
 
         assert result.runner_outputs[0].result.error == "timed out"
-        assert executor.collective_rpc.call_args.kwargs["timeout"] == executor_module._DLO_DP_WAVE_TIMEOUT_S
+        # Whole-request execute RPCs use the dedicated bound, not the wave
+        # stall constant (see _EXECUTE_RPC_TIMEOUT_S in multiproc_executor).
+        assert executor.collective_rpc.call_args.kwargs["timeout"] == executor_module._EXECUTE_RPC_TIMEOUT_S
         executor._fail_closed_on_dp_wave_timeout.assert_called_once()
 
     def test_single_rank_local_request_times_out_and_fails_closed(self):
@@ -679,7 +681,9 @@ class TestRequestModeDispatch:
         result = executor.execute_request(_make_sched_output("A"))
 
         assert result.runner_outputs[0].result.error == "timed out"
-        assert executor.collective_rpc.call_args.kwargs["timeout"] == executor_module._DLO_DP_WAVE_TIMEOUT_S
+        # Whole-request execute RPCs use the dedicated bound, not the wave
+        # stall constant (see _EXECUTE_RPC_TIMEOUT_S in multiproc_executor).
+        assert executor.collective_rpc.call_args.kwargs["timeout"] == executor_module._EXECUTE_RPC_TIMEOUT_S
         executor._fail_closed_on_dp_wave_timeout.assert_called_once()
 
     def test_rank_local_batch_wave_times_out_and_fails_closed(self):
@@ -707,7 +711,9 @@ class TestRequestModeDispatch:
             executor.execute_batch(_make_sched_output("A", "B"))
 
         assert executor.collective_rpc.call_args.args[0] == "execute_model_batch"
-        assert executor.collective_rpc.call_args.kwargs["timeout"] == executor_module._DLO_DP_WAVE_TIMEOUT_S
+        # Whole-request execute RPCs use the dedicated bound, not the wave
+        # stall constant (see _EXECUTE_RPC_TIMEOUT_S in multiproc_executor).
+        assert executor.collective_rpc.call_args.kwargs["timeout"] == executor_module._EXECUTE_RPC_TIMEOUT_S
         executor._fail_closed_on_dp_wave_timeout.assert_called_once()
 
 

@@ -45,6 +45,14 @@ logger = init_logger(__name__)
 
 _DEQUEUE_TIMEOUT_S = 5.0
 _DLO_DP_WAVE_TIMEOUT_S = float(os.environ.get("VLLM_OMNI_DLO_DP_WAVE_TIMEOUT", 600.0))
+# Whole-request bound for execute RPCs that run an entire render inside one
+# call (execute_model on the per-request path, execute_model_batch). #7745
+# reused the 600 s wave-stall bound for these, which kills legitimate
+# multi-step requests on slow hardware: a 50-step Ref2VA render on 8x RTX 5090
+# with MODEL_LEVEL offload measures ~18 min and was killed at exactly 600 s
+# while still making progress. Wave-stall detection (DLO DP waves, stepwise
+# steps) keeps the tight default; whole-request RPCs get this generous knob.
+_EXECUTE_RPC_TIMEOUT_S = float(os.environ.get("VLLM_OMNI_EXECUTE_RPC_TIMEOUT", 3600.0))
 # First (signal-free) shutdown grace. Fast workers exit in well under a
 # second and never notice this value — the join below returns as soon as
 # every process ends. It only matters for slow teardowns: DLO's shutdown
@@ -521,17 +529,20 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
         t = threading.Thread(target=_monitor, daemon=True, name="diffusion-worker-monitor")
         t.start()
 
-    def _fail_closed_on_dp_wave_timeout(self, exc: TimeoutError) -> None:
-        """Shut down every rank after a partial DP wave times out.
+    def _fail_closed_on_dp_wave_timeout(self, exc: TimeoutError, timeout_s: float | None = None) -> None:
+        """Shut down every rank after an execute RPC times out.
 
-        Once one rank is stuck in a DLO AllGather, that process group cannot be
-        reused safely. Shutting down the executor converts an otherwise
-        permanent request hang into a bounded engine failure and lets the
-        caller restart.
+        Once one rank is stuck (a partial DP wave, or a whole-request RPC that
+        never replied), that process group cannot be reused safely. Shutting
+        down the executor converts an otherwise permanent request hang into a
+        bounded engine failure and lets the caller restart.
         """
         logger.error(
-            "DLO DP collective wave timed out after %.1fs; shutting down the worker group: %s",
+            "Diffusion execute RPC timed out after %.1fs (wave=%0.1fs, whole-request=%0.1fs); "
+            "shutting down the worker group: %s",
+            timeout_s if timeout_s is not None else _DLO_DP_WAVE_TIMEOUT_S,
             _DLO_DP_WAVE_TIMEOUT_S,
+            _EXECUTE_RPC_TIMEOUT_S,
             exc,
         )
         self._is_failed = True
@@ -657,7 +668,7 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
                 args: tuple = (req, self.od_config, scheduler_output.kv_prefetch_job)
                 if new_req.diffusion_kv_metadata is not None:
                     args += (new_req.diffusion_kv_metadata,)
-                timeout_options: dict[str, Any] = {"timeout": _DLO_DP_WAVE_TIMEOUT_S}
+                timeout_options: dict[str, Any] = {"timeout": _EXECUTE_RPC_TIMEOUT_S}
                 result = self.collective_rpc(
                     "execute_model",
                     args=args,
@@ -688,7 +699,7 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
                     raise RuntimeError(f"Unexpected response type: {type(result)!r}")
             except Exception as exc:
                 if isinstance(exc, TimeoutError):
-                    self._fail_closed_on_dp_wave_timeout(exc)
+                    self._fail_closed_on_dp_wave_timeout(exc, timeout_s=_EXECUTE_RPC_TIMEOUT_S)
                 runner_outputs.append(
                     RunnerOutput(
                         request_id=new_req.request_id,
@@ -731,13 +742,13 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
                 args=(scheduler_output, self.od_config),
                 unique_reply_rank=0,
                 exec_all_ranks=True,
-                timeout=_DLO_DP_WAVE_TIMEOUT_S,
+                timeout=_EXECUTE_RPC_TIMEOUT_S,
             )
         except TimeoutError as exc:
             # A rank that never replied leaves the process group unusable, so
             # tear the worker group down instead of letting the next wave hang
             # on it too. Mirrors the execute_request() contract.
-            self._fail_closed_on_dp_wave_timeout(exc)
+            self._fail_closed_on_dp_wave_timeout(exc, timeout_s=_EXECUTE_RPC_TIMEOUT_S)
             raise
         if isinstance(result, AsyncDiffusionOutput) and result.kind == AsyncOutputKind.COMPUTE_DONE:
             # Propagate async_output_id to per-request RunnerOutputs so the
