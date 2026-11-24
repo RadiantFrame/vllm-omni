@@ -143,12 +143,20 @@ def resolve_minimax_h3_reference_image_shape(
     image: Image.Image,
     *,
     max_area: int | None = None,
+    base_short_edge: int | None = None,
 ) -> tuple[int, int]:
-    """Preserve reference resolution, rounding each axis to the 32-pixel grid.
+    """Resolve a reference image's working size on the 32-pixel grid.
 
-    ``max_area`` scales the reference down, keeping its aspect ratio, so its
-    pixel area does not exceed the output canvas. Timeline-guided requests use
-    it because their references ride through every step next to the guides.
+    ``base_short_edge`` anchors the size to the task's output short edge the
+    same way reference videos are fitted: the image's own aspect ratio is
+    scaled to that short edge, the pixel-area cap follows the tier policy
+    (``short_edge x align32(short_edge * 7/4)``), and small inputs are never
+    enlarged. Without it (default) the original resolution is preserved.
+
+    ``max_area`` additionally scales the result down, keeping its aspect
+    ratio, so the pixel area does not exceed the output canvas.
+    Timeline-guided requests use it because their references ride through
+    every step next to the guides.
     """
     width, height = image.size
     ratio = width / height
@@ -156,10 +164,40 @@ def resolve_minimax_h3_reference_image_shape(
         raise OmniClientError(f"reference image aspect ratio must be in [0.4, 2.5], got {width}x{height}")
     if min(width, height) < 256 or max(width, height) > 5760:
         raise OmniClientError(f"reference image dimensions must be in [256, 5760] pixels, got {width}x{height}")
-    scale = 1.0 if max_area is None else min(1.0, math.sqrt(max_area / (width * height)))
+    if base_short_edge is not None and base_short_edge <= 0:
+        raise OmniClientError(f"reference image base_short_edge must be positive, got {base_short_edge}")
+    if base_short_edge is None:
+        scale = 1.0
+    else:
+        max_pixels = base_short_edge * _align_multiple(base_short_edge * 7 / 4)
+        if ratio >= 1.0:
+            target_width = float(base_short_edge) * ratio
+            target_height = float(base_short_edge)
+        else:
+            target_width = float(base_short_edge)
+            target_height = base_short_edge / ratio
+        area = target_width * target_height
+        if area > max_pixels:
+            shrink = math.sqrt(max_pixels / area)
+            target_width *= shrink
+            target_height *= shrink
+        canvas_width = _align_multiple(target_width)
+        canvas_height = _align_multiple(target_height)
+        if width * height < canvas_width * canvas_height:
+            # Never enlarge: keep the original resolution on the grid.
+            return (
+                _align_multiple(width),
+                _align_multiple(height),
+            )
+        width, height = int(target_width), int(target_height)
+        scale = 1.0
+    if max_area is not None:
+        area = width * height
+        if area > max_area:
+            scale = min(scale, math.sqrt(max_area / area))
     return (
-        _align_multiple(width * scale, MINIMAX_H3_REFERENCE_IMAGE_MULTIPLE),
-        _align_multiple(height * scale, MINIMAX_H3_REFERENCE_IMAGE_MULTIPLE),
+        _align_multiple(width * scale),
+        _align_multiple(height * scale),
     )
 
 

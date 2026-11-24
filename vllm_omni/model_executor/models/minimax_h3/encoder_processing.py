@@ -307,7 +307,13 @@ def _prepare_encoder_images(
         max_area = width * height if guided else None
         return [
             image.resize(
-                resolve_minimax_h3_reference_image_shape(image, max_area=max_area),
+                resolve_minimax_h3_reference_image_shape(
+                    image,
+                    max_area=max_area,
+                    # Anchor reference images to the output tier's short edge,
+                    # mirroring the reference-video canvas fit.
+                    base_short_edge=int(min(height, width)),
+                ),
                 Image.Resampling.LANCZOS,
             )
             for image in images

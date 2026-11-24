@@ -315,14 +315,19 @@ def test_guided_ref2va_references_are_scaled_down_to_the_output_area(monkeypatch
     from vllm_omni.model_executor.models.minimax_h3.preprocessing import resolve_minimax_h3_reference_image_shape
 
     image = Image.new("RGB", (1600, 800))
+    # Without an anchor the resolver preserves resolution; max_area (guided)
+    # alone scales it down to the output area.
     assert resolve_minimax_h3_reference_image_shape(image) == (1600, 800)
     assert resolve_minimax_h3_reference_image_shape(image, max_area=1344 * 768) == (1440, 704)
     assert resolve_minimax_h3_reference_image_shape(Image.new("RGB", (512, 256)), max_area=1344 * 768) == (512, 256)
 
     monkeypatch.setattr(processing, "resolve_minimax_h3_shape", lambda *_: (768, 1344, 124, 37, 207))
     sampling = SimpleNamespace(extra_args={"task": "ref2va"})
+    # ref2va reference images anchor to the output tier's short edge (768)
+    # even without guides; a 1600x800 input shrinks to its own-ratio canvas
+    # under the 768x1344 cap.
     unguided = {"prompt": "x", "multi_modal_data": {"image": [image]}}
-    assert processing.prepare_encoder_inputs(unguided, sampling).images[0].size == (1600, 800)
+    assert processing.prepare_encoder_inputs(unguided, sampling).images[0].size == (1440, 704)
     guide = {"frame_index": 0, "image": Image.new("RGB", (1344, 768))}
     guided = {"prompt": "x", "multi_modal_data": {"image": [image], "timeline_guides": [guide]}}
     prepared = processing.prepare_encoder_inputs(guided, sampling)

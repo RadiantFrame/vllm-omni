@@ -2021,6 +2021,53 @@ def test_reference_image_resize_contract(size, expected):
     assert resolve_minimax_h3_reference_image_shape(Image.new("RGB", size)) == expected
 
 
+@pytest.mark.parametrize(
+    ("base", "size", "expected"),
+    [
+        # 768 tier: large inputs shrink to the image's own-ratio canvas under
+        # the 768x1344 cap; small inputs are never enlarged.
+        (768, (1920, 1080), (1344, 768)),
+        (768, (4096, 4096), (768, 768)),
+        (768, (1000, 1250), (768, 960)),
+        (768, (640, 360), (640, 352)),
+        (768, (832, 448), (832, 448)),
+        # 480 tier: canvas and cap follow the 480x832 policy.
+        (480, (1280, 720), (832, 480)),
+        (480, (1000, 1250), (480, 608)),
+        (480, (640, 360), (640, 352)),
+    ],
+    ids=[
+        "768-shrink-16x9", "768-shrink-square", "768-shrink-portrait",
+        "768-no-enlarge", "768-small-keeps-grid", "480-shrink-16x9",
+        "480-shrink-portrait", "480-no-enlarge",
+    ],
+)
+def test_reference_image_resize_anchors_to_task_short_edge(base, size, expected):
+    """ref2va reference images anchor to the output tier like reference videos."""
+    from PIL import Image
+
+    from vllm_omni.model_executor.models.minimax_h3.preprocessing import (
+        resolve_minimax_h3_reference_image_shape,
+    )
+
+    assert resolve_minimax_h3_reference_image_shape(
+        Image.new("RGB", size), base_short_edge=base) == expected
+
+
+def test_reference_image_anchor_combines_with_guided_max_area():
+    from PIL import Image
+
+    from vllm_omni.model_executor.models.minimax_h3.preprocessing import (
+        resolve_minimax_h3_reference_image_shape,
+    )
+
+    # Anchor to the 768 tier canvas first, then the guided max_area clamp
+    # (here a 1:1 output canvas, 768x768) bounds the result further.
+    assert resolve_minimax_h3_reference_image_shape(
+        Image.new("RGB", (1920, 1080)), max_area=768 * 768, base_short_edge=768
+    ) == (1024, 576)
+
+
 def test_reference_image_resize_rejects_invalid_input():
     from PIL import Image
 
