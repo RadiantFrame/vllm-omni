@@ -2238,6 +2238,36 @@ def test_reference_video_shape_caps_large_inputs_without_enlarging_small_inputs(
     assert _reference_video_shape(*size) == expected
 
 
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [
+        ((1920, 1080), (832, 480)),   # large input shrinks to the 480-tier canvas
+        ((1080, 1920), (480, 832)),
+        ((1280, 720), (832, 480)),    # 0.92M px still exceeds the 480x832 cap
+        ((640, 360), (640, 352)),     # small input is never enlarged
+        ((416, 416), (416, 416)),
+    ],
+)
+def test_reference_video_shape_anchors_to_task_short_edge(size, expected):
+    """480P tasks derive the reference canvas from the 480 tier, not 768."""
+    from vllm_omni.model_executor.models.minimax_h3.reference_video import (
+        _reference_video_shape,
+    )
+
+    assert _reference_video_shape(*size, base_short_edge=480) == expected
+
+
+def test_reference_video_shape_rejects_non_positive_short_edge():
+    import pytest as _pytest
+
+    from vllm_omni.model_executor.models.minimax_h3.reference_video import (
+        _reference_video_shape,
+    )
+
+    with _pytest.raises(Exception, match="base_short_edge"):
+        _reference_video_shape(1280, 720, base_short_edge=0)
+
+
 def test_text_encoder_stub_constructs_without_group_or_weights():
     from vllm_omni.diffusion.models.minimax_h3.encoder import (
         MiniMaxH3Qwen3VLEncoder,

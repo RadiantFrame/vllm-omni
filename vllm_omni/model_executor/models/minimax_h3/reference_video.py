@@ -68,7 +68,6 @@ MINIMAX_H3_QWEN_VIDEO_SAMPLE_FPS = 2.0
 MINIMAX_H3_QWEN_TEMPORAL_PATCH = 2
 MINIMAX_H3_CANVAS_MULTIPLE = 32
 MINIMAX_H3_BASE_SHORT_EDGE = 768
-MINIMAX_H3_MAX_PIXELS = 768 * 1344
 MINIMAX_H3_MIN_REFERENCE_DIMENSION = 256
 MINIMAX_H3_MAX_REFERENCE_DIMENSION = 5760
 MINIMAX_H3_MIN_REFERENCE_FPS = 23.976
@@ -298,8 +297,18 @@ def validate_reference_audio_waveforms(values: list[tuple[torch.Tensor, int]]) -
         raise OmniClientError("reference audio must be at most 15 seconds in total")
 
 
-def _reference_video_shape(width: int, height: int) -> tuple[int, int]:
-    """Fit large references to the video canvas without enlarging small inputs."""
+def _reference_video_shape(
+    width: int, height: int, *, base_short_edge: int = MINIMAX_H3_BASE_SHORT_EDGE
+) -> tuple[int, int]:
+    """Fit large references to the video canvas without enlarging small inputs.
+
+    ``base_short_edge`` anchors the canvas to the task's output short edge
+    (768 default). The pixel-area cap follows the same tier policy as the
+    output canvas: ``short_edge x align32(short_edge * 7/4)`` — 768 -> 768x1344,
+    480 -> 480x832 — so 480P tasks do not carry 768-scale reference tokens.
+    """
+    if base_short_edge <= 0:
+        raise OmniClientError(f"reference video base_short_edge must be positive, got {base_short_edge}")
     if (
         min(width, height) < MINIMAX_H3_MIN_REFERENCE_DIMENSION
         or max(width, height) > MINIMAX_H3_MAX_REFERENCE_DIMENSION
@@ -308,15 +317,17 @@ def _reference_video_shape(width: int, height: int) -> tuple[int, int]:
     ratio = float(width) / float(height)
     if not 0.4 <= ratio <= 2.5:
         raise OmniClientError(f"reference video aspect ratio must be in [0.4, 2.5], got {width}x{height}")
+    max_pixels = base_short_edge * _nearest_multiple(
+        base_short_edge * 7 / 4, MINIMAX_H3_CANVAS_MULTIPLE)
     if ratio >= 1.0:
-        target_width = MINIMAX_H3_BASE_SHORT_EDGE * ratio
-        target_height = float(MINIMAX_H3_BASE_SHORT_EDGE)
+        target_width = base_short_edge * ratio
+        target_height = float(base_short_edge)
     else:
-        target_width = float(MINIMAX_H3_BASE_SHORT_EDGE)
-        target_height = MINIMAX_H3_BASE_SHORT_EDGE / ratio
+        target_width = float(base_short_edge)
+        target_height = base_short_edge / ratio
     area = target_width * target_height
-    if area > MINIMAX_H3_MAX_PIXELS:
-        scale = math.sqrt(MINIMAX_H3_MAX_PIXELS / area)
+    if area > max_pixels:
+        scale = math.sqrt(max_pixels / area)
         target_width *= scale
         target_height *= scale
     canvas_width = _nearest_multiple(target_width, MINIMAX_H3_CANVAS_MULTIPLE)
@@ -442,6 +453,7 @@ def prepare_reference_videos(
     target_frame_count: int,
     workdir: str,
     start_time_seconds: Any = None,
+    short_edge: int = MINIMAX_H3_BASE_SHORT_EDGE,
 ) -> list[dict[str, Any]]:
     if isinstance(values, (str, os.PathLike)):
         values = [values]
@@ -484,7 +496,8 @@ def prepare_reference_videos(
             if duration < MINIMAX_H3_MIN_REFERENCE_DURATION:
                 raise OmniClientError("reference videos must be at most 15 seconds in total")
         total_duration += duration
-        width, height = _reference_video_shape(meta["width"], meta["height"])
+        width, height = _reference_video_shape(
+            meta["width"], meta["height"], base_short_edge=int(short_edge))
         item_workdir = Path(workdir) / f"video_{index}"
         item_workdir.mkdir(parents=True)
         prepared_path = _transcode_reference_video(

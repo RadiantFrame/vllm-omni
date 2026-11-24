@@ -767,6 +767,10 @@ def prepare_encoder_inputs(
                         target_frame_count=num_frames,
                         workdir=workdir,
                         start_time_seconds=extra_args.get("start_time_seconds"),
+                        # Anchor the reference canvas to the output tier's
+                        # short edge so 480P tasks carry 480-scale references
+                        # instead of the hardcoded 768 base.
+                        short_edge=int(min(height, width)),
                     )
                 audio_pool = ThreadPoolExecutor(max_workers=1)
                 try:
